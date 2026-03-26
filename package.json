@@ -1,15 +1,47 @@
 {
   "name": "gip-remote",
   "version": "1.0.0",
-  "description": "",
+  "description": "Git+Pear remote DB for handling git data",
   "main": "index.js",
   "scripts": {
-    "test": "brittle test/*.js"
+    "format": "prettier . --write",
+    "test": "prettier . --check && lunte && brittle-bare test/index.js",
+    "lint": "lunte"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "commonjs",
+  "imports": {
+    "fs": {
+      "bare": "bare-fs",
+      "default": "fs"
+    },
+    "path": {
+      "bare": "bare-path",
+      "default": "path"
+    }
+  },
+  "exports": {
+    "./package": "./package.json",
+    ".": {
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "package.json",
+    "index.js",
+    "index.d.ts",
+    "lib"
+  ],
+  "keywords": [],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/holepunchto/gip-remote.git"
+  },
+  "author": "Holepunch Inc",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/holepunchto/gip-remote/issues"
+  },
+  "homepage": "https://github.com/holepunchto/gip-remote",
   "devDependencies": {
     "brittle": "^3.19.1",
     "corestore": "^7.9.2",
@@ -20,6 +52,8 @@
     "test-tmp": "^1.4.0"
   },
   "dependencies": {
+    "bare-fs": "^4.5.6",
+    "bare-path": "^3.0.0",
     "hyperbee2": "^2.8.0",
     "hyperdb": "^6.3.0",
     "mirror-drive": "^1.13.0",

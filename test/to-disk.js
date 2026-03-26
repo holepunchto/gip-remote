@@ -9,13 +9,13 @@ const { toDisk } = require('../lib/git')
 
 // --- Helpers ---
 
-async function createGitDir (t) {
+async function createGitDir(t) {
   const dir = await tmp(t)
   execSync('git init', { cwd: dir, stdio: 'ignore' })
   return dir
 }
 
-async function computeOid (type, data) {
+async function computeOid(type, data) {
   return git.writeObject({ type, object: data, dryrun: true })
 }
 

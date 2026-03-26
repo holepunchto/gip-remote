@@ -8,14 +8,14 @@ const { Remote, parseCommit, walkTree } = require('../')
 
 // --- Helpers ---
 
-async function createStore (t) {
+async function createStore(t) {
   const dir = await tmp(t)
   const store = new Corestore(dir)
   t.teardown(() => store.close())
   return store
 }
 
-async function createRemote (t, opts = {}) {
+async function createRemote(t, opts = {}) {
   const { bootstrap } = await createTestnet(3, t.teardown)
 
   const store = await createStore(t)
@@ -41,7 +41,7 @@ const OID_TREE_SRC = 'cc'.repeat(20)
 const OID_TREE_ROOT = 'dd'.repeat(20)
 const OID_COMMIT = 'ee'.repeat(20)
 
-function makeTreeData (entries) {
+function makeTreeData(entries) {
   const bufs = []
   for (const { mode, name, oid } of entries) {
     bufs.push(Buffer.from(`${mode} ${name}\0`))
@@ -50,7 +50,7 @@ function makeTreeData (entries) {
   return Buffer.concat(bufs)
 }
 
-function makeTestObjects () {
+function makeTestObjects() {
   const blobData = Buffer.from('hello world')
   const objects = new Map()
   objects.set(OID_BLOB1, { type: 'blob', size: blobData.length, data: blobData })
