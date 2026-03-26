@@ -58,7 +58,7 @@
     "hyperdb": "^6.3.0",
     "mirror-drive": "^1.13.0",
     "ready-resource": "^1.2.0",
-    "rebuild-git": "^1.0.0",
+    "rebuild-git": "^1.1.1",
     "streamx": "^2.25.0"
   }
 }

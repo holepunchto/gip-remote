@@ -76,6 +76,8 @@ declare class RemoteDrive {
 interface ToDiskOpts {
   gitDir: string
   objects: Array<{ type: string; id: string; size: number; data: Buffer }>
+  refs?: Record<string, string>
+  head?: string
   objectFormat?: 'sha1'
   fs?: any
   verifySizes?: boolean

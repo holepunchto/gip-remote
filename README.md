@@ -65,7 +65,9 @@ const objects = await remote.getRefObjects(commitOid)
 
 await toDisk({
   gitDir: '/path/to/repo/.git',
-  objects
+  objects,
+  refs: { 'refs/heads/main': commitOid },
+  head: 'main'
 })
 ```
 
@@ -119,6 +121,8 @@ Write git objects to a `.git` directory.
 
 - `opts.gitDir` - path to the `.git` directory (required)
 - `opts.objects` - array of `{ type, id, size, data }` (required)
+- `opts.refs` - object mapping ref names to OIDs, e.g. `{ 'refs/heads/main': commitOid }`
+- `opts.head` - branch name to set HEAD to, e.g. `'main'`
 - `opts.objectFormat` - hash algorithm, only `'sha1'` supported (default)
 - `opts.verifySizes` - verify declared sizes match buffer lengths (default `true`)
 

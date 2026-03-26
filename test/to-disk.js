@@ -209,3 +209,101 @@ test('toDisk is idempotent', async (t) => {
   const content = execSync(`git cat-file -p ${oid}`, { cwd: dir }).toString()
   t.is(content, 'idempotent')
 })
+
+// --- Refs tests ---
+
+test('toDisk writes refs', async (t) => {
+  const dir = await createGitDir(t)
+  const data = Buffer.from('ref test')
+  const blobOid = await computeOid('blob', data)
+
+  const { GitTree } = require('rebuild-git')
+  const tree = new GitTree([{ mode: '100644', path: 'file.txt', oid: blobOid, type: 'blob' }])
+  const treeData = tree.toObject()
+  const treeOid = await computeOid('tree', treeData)
+
+  const commitText = [
+    `tree ${treeOid}`,
+    'author Test <test@test.com> 1700000000 +0000',
+    'committer Test <test@test.com> 1700000000 +0000',
+    '',
+    'ref commit'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+  const commitOid = await computeOid('commit', commitData)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [
+      { type: 'blob', id: blobOid, data, size: data.length },
+      { type: 'tree', id: treeOid, data: treeData, size: treeData.length },
+      { type: 'commit', id: commitOid, data: commitData, size: commitData.length }
+    ],
+    refs: { 'refs/heads/main': commitOid }
+  })
+
+  const refContent = readFileSync(join(dir, '.git', 'refs', 'heads', 'main'), 'utf8').trim()
+  t.is(refContent, commitOid)
+
+  const resolved = execSync('git rev-parse refs/heads/main', { cwd: dir }).toString().trim()
+  t.is(resolved, commitOid)
+})
+
+test('toDisk writes HEAD as symbolic ref', async (t) => {
+  const dir = await createGitDir(t)
+  const data = Buffer.from('head test')
+  const blobOid = await computeOid('blob', data)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [{ type: 'blob', id: blobOid, data, size: data.length }],
+    head: 'main'
+  })
+
+  const headContent = readFileSync(join(dir, '.git', 'HEAD'), 'utf8').trim()
+  t.is(headContent, 'ref: refs/heads/main')
+})
+
+test('toDisk writes refs and HEAD together', async (t) => {
+  const dir = await createGitDir(t)
+  const data = Buffer.from('full test')
+  const blobOid = await computeOid('blob', data)
+
+  const { GitTree } = require('rebuild-git')
+  const tree = new GitTree([{ mode: '100644', path: 'file.txt', oid: blobOid, type: 'blob' }])
+  const treeData = tree.toObject()
+  const treeOid = await computeOid('tree', treeData)
+
+  const commitText = [
+    `tree ${treeOid}`,
+    'author Test <test@test.com> 1700000000 +0000',
+    'committer Test <test@test.com> 1700000000 +0000',
+    '',
+    'full commit'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+  const commitOid = await computeOid('commit', commitData)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [
+      { type: 'blob', id: blobOid, data, size: data.length },
+      { type: 'tree', id: treeOid, data: treeData, size: treeData.length },
+      { type: 'commit', id: commitOid, data: commitData, size: commitData.length }
+    ],
+    refs: { 'refs/heads/main': commitOid },
+    head: 'main'
+  })
+
+  // HEAD points to main
+  const headContent = readFileSync(join(dir, '.git', 'HEAD'), 'utf8').trim()
+  t.is(headContent, 'ref: refs/heads/main')
+
+  // main resolves to commit
+  const resolved = execSync('git rev-parse HEAD', { cwd: dir }).toString().trim()
+  t.is(resolved, commitOid)
+
+  // Can read the tree via HEAD
+  const treeFromHead = execSync('git cat-file -p HEAD^{tree}', { cwd: dir }).toString()
+  t.ok(treeFromHead.includes('file.txt'))
+})
