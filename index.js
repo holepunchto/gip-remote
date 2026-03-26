@@ -1,70 +1,9 @@
 const ReadyResource = require('ready-resource')
 const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
-const { GitTree } = require('rebuild-git')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
-
-// --- Git commit parser ---
-
-function parseCommit(data) {
-  const text = data.toString('utf8')
-  const lines = text.split('\n')
-  const result = { tree: null, parents: [], author: null, timestamp: 0, message: '' }
-
-  let i = 0
-  for (; i < lines.length; i++) {
-    const line = lines[i]
-    if (line === '') {
-      i++
-      break
-    }
-
-    if (line.startsWith('tree ')) {
-      result.tree = line.slice(5)
-    } else if (line.startsWith('parent ')) {
-      result.parents.push(line.slice(7))
-    } else if (line.startsWith('author ')) {
-      const match = line.match(/^author (.+) <.+> (\d+) [+-]\d+$/)
-      if (match) {
-        result.author = match[1]
-        result.timestamp = parseInt(match[2])
-      }
-    }
-  }
-
-  result.message = lines.slice(i).join('\n').trim()
-  return result
-}
-
-// --- Tree walker: extracts all file paths from git tree objects ---
-
-function walkTree(objects, treeOid, prefix) {
-  const treeObj = objects.get(treeOid)
-  if (!treeObj || treeObj.type !== 'tree') return []
-
-  const entries = GitTree.from(treeObj.data).entries()
-  const files = []
-
-  for (const entry of entries) {
-    const path = prefix + '/' + entry.path
-    if (entry.type === 'tree') {
-      files.push(...walkTree(objects, entry.oid, path))
-    } else {
-      const blob = objects.get(entry.oid)
-      files.push({
-        path,
-        oid: entry.oid,
-        mode: entry.mode || '100644',
-        size: blob ? blob.size : 0
-      })
-    }
-  }
-
-  return files
-}
-
-// --- Remote DB ---
+const { parseCommit, walkTree } = require('./lib/git')
 
 class Remote extends ReadyResource {
   _swarm = null

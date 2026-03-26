@@ -1,0 +1,211 @@
+const test = require('brittle')
+const tmp = require('test-tmp')
+const { execSync } = require('child_process')
+const { existsSync, readFileSync } = require('fs')
+const { join } = require('path')
+const git = require('rebuild-git')
+
+const { toDisk } = require('../lib/git')
+
+// --- Helpers ---
+
+async function createGitDir (t) {
+  const dir = await tmp(t)
+  execSync('git init', { cwd: dir, stdio: 'ignore' })
+  return dir
+}
+
+async function computeOid (type, data) {
+  return git.writeObject({ type, object: data, dryrun: true })
+}
+
+// --- Validation tests ---
+
+test('toDisk throws without gitDir', async (t) => {
+  try {
+    await toDisk({ objects: [{ type: 'blob', id: 'abc', data: Buffer.alloc(0), size: 0 }] })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.is(err.message, 'gitDir is required')
+  }
+})
+
+test('toDisk throws without objects', async (t) => {
+  try {
+    await toDisk({ gitDir: '/fake/.git' })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.is(err.message, 'No objects supplied.')
+  }
+})
+
+test('toDisk throws for empty objects array', async (t) => {
+  try {
+    await toDisk({ gitDir: '/fake/.git', objects: [] })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.is(err.message, 'No objects supplied.')
+  }
+})
+
+test('toDisk throws for non-sha1 objectFormat', async (t) => {
+  try {
+    await toDisk({
+      gitDir: '/fake/.git',
+      objectFormat: 'sha256',
+      objects: [{ type: 'blob', id: 'abc', data: Buffer.alloc(0), size: 0 }]
+    })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.is(err.message, 'Only sha1 is supported')
+  }
+})
+
+test('toDisk throws for invalid object entry', async (t) => {
+  const dir = await createGitDir(t)
+
+  try {
+    await toDisk({
+      gitDir: join(dir, '.git'),
+      objects: [{ type: null, id: null, data: null }]
+    })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('Invalid object entry'))
+  }
+})
+
+test('toDisk throws on size mismatch', async (t) => {
+  const dir = await createGitDir(t)
+
+  try {
+    await toDisk({
+      gitDir: join(dir, '.git'),
+      objects: [{ type: 'blob', id: 'abc123', data: Buffer.from('hello'), size: 999 }]
+    })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('Size mismatch'))
+  }
+})
+
+test('toDisk skips size check when verifySizes is false', async (t) => {
+  const dir = await createGitDir(t)
+
+  try {
+    await toDisk({
+      gitDir: join(dir, '.git'),
+      objects: [{ type: 'blob', id: 'wrong-id', data: Buffer.from('hello'), size: 999 }],
+      verifySizes: false
+    })
+    t.fail('should have thrown with OID mismatch')
+  } catch (err) {
+    t.ok(err.message.includes('OID mismatch'), 'got past size check to OID mismatch')
+  }
+})
+
+test('toDisk throws on OID mismatch', async (t) => {
+  const dir = await createGitDir(t)
+
+  try {
+    await toDisk({
+      gitDir: join(dir, '.git'),
+      objects: [{ type: 'blob', id: 'deadbeef'.repeat(5), data: Buffer.from('test'), size: 4 }]
+    })
+    t.fail('should have thrown')
+  } catch (err) {
+    t.ok(err.message.includes('OID mismatch'))
+  }
+})
+
+// --- Write tests (real git dir) ---
+
+test('toDisk writes a blob object', async (t) => {
+  const dir = await createGitDir(t)
+  const data = Buffer.from('hello world')
+  const oid = await computeOid('blob', data)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [{ type: 'blob', id: oid, data, size: data.length }]
+  })
+
+  const objectPath = join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2))
+  t.ok(existsSync(objectPath), 'object file written')
+
+  // Verify git can read it back
+  const content = execSync(`git cat-file -p ${oid}`, { cwd: dir }).toString()
+  t.is(content, 'hello world')
+})
+
+test('toDisk writes multiple objects', async (t) => {
+  const dir = await createGitDir(t)
+
+  const blob1 = Buffer.from('file one')
+  const blob2 = Buffer.from('file two')
+  const oid1 = await computeOid('blob', blob1)
+  const oid2 = await computeOid('blob', blob2)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [
+      { type: 'blob', id: oid1, data: blob1, size: blob1.length },
+      { type: 'blob', id: oid2, data: blob2, size: blob2.length }
+    ]
+  })
+
+  const content1 = execSync(`git cat-file -p ${oid1}`, { cwd: dir }).toString()
+  const content2 = execSync(`git cat-file -p ${oid2}`, { cwd: dir }).toString()
+  t.is(content1, 'file one')
+  t.is(content2, 'file two')
+})
+
+test('toDisk writes a commit object', async (t) => {
+  const dir = await createGitDir(t)
+
+  // First write a blob + tree so we can make a valid commit
+  const blobData = Buffer.from('readme content')
+  const blobOid = await computeOid('blob', blobData)
+
+  const { GitTree } = require('rebuild-git')
+  const tree = new GitTree([{ mode: '100644', path: 'README.md', oid: blobOid, type: 'blob' }])
+  const treeData = tree.toObject()
+  const treeOid = await computeOid('tree', treeData)
+
+  const commitText = [
+    `tree ${treeOid}`,
+    'author Test <test@test.com> 1700000000 +0000',
+    'committer Test <test@test.com> 1700000000 +0000',
+    '',
+    'test commit'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+  const commitOid = await computeOid('commit', commitData)
+
+  await toDisk({
+    gitDir: join(dir, '.git'),
+    objects: [
+      { type: 'blob', id: blobOid, data: blobData, size: blobData.length },
+      { type: 'tree', id: treeOid, data: treeData, size: treeData.length },
+      { type: 'commit', id: commitOid, data: commitData, size: commitData.length }
+    ]
+  })
+
+  const commitInfo = execSync(`git cat-file -p ${commitOid}`, { cwd: dir }).toString()
+  t.ok(commitInfo.includes('test commit'), 'commit message present')
+  t.ok(commitInfo.includes(`tree ${treeOid}`), 'tree ref present')
+})
+
+test('toDisk is idempotent', async (t) => {
+  const dir = await createGitDir(t)
+  const data = Buffer.from('idempotent')
+  const oid = await computeOid('blob', data)
+
+  const obj = { type: 'blob', id: oid, data, size: data.length }
+
+  await toDisk({ gitDir: join(dir, '.git'), objects: [obj] })
+  await toDisk({ gitDir: join(dir, '.git'), objects: [obj] })
+
+  const content = execSync(`git cat-file -p ${oid}`, { cwd: dir }).toString()
+  t.is(content, 'idempotent')
+})
