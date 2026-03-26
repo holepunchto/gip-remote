@@ -1,6 +1,8 @@
 # gip-remote
 
-Git-in-Pear remote database. Store and replicate Git repositories over Hyperswarm using HyperDB.
+Git-into-Pear remote database. Store and replicate p2p Git repositories [HyperDB](https://github.com/holepunchto/hyperdb).
+
+Git objects are stored raw, and rebuilt to file when needed. Built for the [Git+Pear remote transport](https://github.com/holepunchto/git-remote-punch-transport).
 
 ```
 npm install gip-remote
@@ -15,11 +17,19 @@ const { Remote } = require('gip-remote')
 
 const store = new Corestore('./my-store')
 const swarm = new Hyperswarm()
+swarm.on('connection', (conn) => {
+  store.replicate(conn)
+})
 
-const remote = new Remote({ name: 'my-repo', store, swarm })
+// new remote
+const remote = new Remote(store.namespace('my-repo'), 'my-repo')
 await remote.ready()
 
 console.log(remote.key) // public key
+
+// remote remote!
+const remote2 = new Remote(store.namespace('my-other-repo'), 'git+pear://0.1.iain5rkqfenyjrcod53tb61cq3egpwbk6cnd15ca3pqm39g7wf1y/my-other-repo')
+await remote2.ready()
 ```
 
 ### Push
@@ -38,7 +48,7 @@ const objects = await remote.getRefObjects(commitOid)
 
 ### toDrive
 
-Get a Hyperdrive-compatible interface for a branch. Works with `mirror-drive`.
+Get a Hyperdrive-compatible interface for a branch. Works with [mirror-drive](https://github.com/holepunchto/mirror-drive/).
 
 ```js
 const drive = await remote.toDrive('main')

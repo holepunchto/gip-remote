@@ -1,6 +1,6 @@
 const test = require('brittle')
 const tmp = require('test-tmp')
-const { execSync } = require('child_process')
+const { spawnSync } = require('child_process')
 const { existsSync, readFileSync } = require('fs')
 const { join } = require('path')
 const git = require('rebuild-git')
@@ -11,12 +11,18 @@ const { toDisk } = require('../lib/git')
 
 async function createGitDir(t) {
   const dir = await tmp(t)
-  execSync('git init', { cwd: dir, stdio: 'ignore' })
+  spawnSync('git', ['init'], { cwd: dir, stdio: 'ignore' })
   return dir
 }
 
 async function computeOid(type, data) {
   return git.writeObject({ type, object: data, dryrun: true })
+}
+
+function gitExec(args, opts) {
+  const result = spawnSync('git', args, { ...opts, encoding: 'utf8' })
+  if (result.status !== 0) throw new Error(result.stderr || 'git failed')
+  return result.stdout.toString()
 }
 
 // --- Validation tests ---
@@ -134,7 +140,7 @@ test('toDisk writes a blob object', async (t) => {
   t.ok(existsSync(objectPath), 'object file written')
 
   // Verify git can read it back
-  const content = execSync(`git cat-file -p ${oid}`, { cwd: dir }).toString()
+  const content = gitExec(['cat-file', '-p', oid], { cwd: dir })
   t.is(content, 'hello world')
 })
 
@@ -154,8 +160,8 @@ test('toDisk writes multiple objects', async (t) => {
     ]
   })
 
-  const content1 = execSync(`git cat-file -p ${oid1}`, { cwd: dir }).toString()
-  const content2 = execSync(`git cat-file -p ${oid2}`, { cwd: dir }).toString()
+  const content1 = gitExec(['cat-file', '-p', oid1], { cwd: dir })
+  const content2 = gitExec(['cat-file', '-p', oid2], { cwd: dir })
   t.is(content1, 'file one')
   t.is(content2, 'file two')
 })
@@ -191,7 +197,7 @@ test('toDisk writes a commit object', async (t) => {
     ]
   })
 
-  const commitInfo = execSync(`git cat-file -p ${commitOid}`, { cwd: dir }).toString()
+  const commitInfo = gitExec(['cat-file', '-p', commitOid], { cwd: dir })
   t.ok(commitInfo.includes('test commit'), 'commit message present')
   t.ok(commitInfo.includes(`tree ${treeOid}`), 'tree ref present')
 })
@@ -206,7 +212,7 @@ test('toDisk is idempotent', async (t) => {
   await toDisk({ gitDir: join(dir, '.git'), objects: [obj] })
   await toDisk({ gitDir: join(dir, '.git'), objects: [obj] })
 
-  const content = execSync(`git cat-file -p ${oid}`, { cwd: dir }).toString()
+  const content = gitExec(['cat-file', '-p', oid], { cwd: dir })
   t.is(content, 'idempotent')
 })
 
@@ -245,7 +251,7 @@ test('toDisk writes refs', async (t) => {
   const refContent = readFileSync(join(dir, '.git', 'refs', 'heads', 'main'), 'utf8').trim()
   t.is(refContent, commitOid)
 
-  const resolved = execSync('git rev-parse refs/heads/main', { cwd: dir }).toString().trim()
+  const resolved = gitExec(['rev-parse', 'refs/heads/main'], { cwd: dir }).trim()
   t.is(resolved, commitOid)
 })
 
@@ -300,10 +306,10 @@ test('toDisk writes refs and HEAD together', async (t) => {
   t.is(headContent, 'ref: refs/heads/main')
 
   // main resolves to commit
-  const resolved = execSync('git rev-parse HEAD', { cwd: dir }).toString().trim()
+  const resolved = gitExec(['rev-parse', 'HEAD'], { cwd: dir }).trim()
   t.is(resolved, commitOid)
 
   // Can read the tree via HEAD
-  const treeFromHead = execSync('git cat-file -p HEAD^{tree}', { cwd: dir }).toString()
+  const treeFromHead = gitExec(['cat-file', '-p', 'HEAD^{tree}'], { cwd: dir })
   t.ok(treeFromHead.includes('file.txt'))
 })

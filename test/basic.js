@@ -1,38 +1,7 @@
 const test = require('brittle')
-const createTestnet = require('hyperdht/testnet')
-const Hyperswarm = require('hyperswarm')
-const tmp = require('test-tmp')
-const Corestore = require('corestore')
+const { createRemote } = require('./helpers')
 
-const { Remote, parseCommit, walkTree } = require('../')
-
-// --- Helpers ---
-
-async function createStore(t) {
-  const dir = await tmp(t)
-  const store = new Corestore(dir)
-  t.teardown(() => store.close())
-  return store
-}
-
-async function createRemote(t, opts = {}) {
-  const { bootstrap } = await createTestnet(3, t.teardown)
-
-  const store = await createStore(t)
-  const swarm = new Hyperswarm({ bootstrap })
-  t.teardown(() => swarm.destroy())
-
-  const remote = new Remote({
-    name: opts.name || 'test-repo',
-    store,
-    swarm,
-    ...opts
-  })
-  t.teardown(() => remote.close())
-  await remote.ready()
-
-  return remote
-}
+const { parseCommit, walkTree } = require('../')
 
 // 40-char hex OIDs (proper SHA1 length)
 const OID_BLOB1 = 'aa'.repeat(20)
@@ -169,7 +138,7 @@ test('walkTree returns empty for missing tree', (t) => {
 // --- Remote ---
 
 test('remote has key after ready', async (t) => {
-  const remote = await createRemote(t)
+  const remote = await createRemote(t, { name: 'test-repo' })
   t.ok(remote.key, 'has key')
   t.ok(remote.discoveryKey, 'has discoveryKey')
   t.is(remote.name, 'test-repo')

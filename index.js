@@ -3,6 +3,7 @@ const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
+const GitPearLink = require('./lib/link')
 const { parseCommit, walkTree } = require('./lib/git')
 
 class Remote extends ReadyResource {
@@ -11,40 +12,26 @@ class Remote extends ReadyResource {
   _db = null
   _key = null
 
-  constructor(args = {}) {
+  constructor(store, link, opts = {}) {
     super()
 
-    this._name = args.name
-    this._store = args.store
-    this._swarm = args.swarm
-    this._timeout = args.timeout || 240_000
-    this._blind = args.blind
-    this._key = args.key
+    this._link =
+      typeof link === 'string' && link.startsWith('git+pear:') ? GitPearLink.parse(link) : link
+    const config = typeof this._link === 'string' ? { name: this._link } : this._link
 
-    const bee = new Hyperbee(this._store, { key: args.key })
-    this._db = HyperDB.bee2(bee, def)
+    const bee = new Hyperbee(store, config, { autoUpdate: true })
+    this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
 
-    this._onconnection = (conn) => {
-      this._store.replicate(conn)
-      this.emit('connection', conn)
-    }
-
-    this._swarm.on('connection', this._onconnection)
+    this._name = config.name || config.pathname.split('/').slice(1)[0]
+    this._timeout = opts.timeout || 240_000
+    this._blind = opts.blind
   }
 
   async _open() {
     await this._db.ready()
-
-    this._topic = this._swarm.join(this.discoveryKey)
-
-    await this._db.update()
   }
 
   async _close() {
-    this._swarm.off('connection', this._onconnection)
-
-    if (this._topic) await this._topic.destroy()
-
     await this._db.close()
   }
 
@@ -213,6 +200,7 @@ class Remote extends ReadyResource {
 module.exports = {
   Remote,
   RemoteDrive,
+  GitPearLink,
   parseCommit,
   walkTree
 }
