@@ -11,7 +11,7 @@ const VERSION = 1
 // eslint-disable-next-line no-unused-vars
 let version = VERSION
 
-// @punch/repos
+// @gip/repos
 const encoding0 = {
   preencode(state, m) {
     c.string.preencode(state, m.name)
@@ -45,10 +45,10 @@ const encoding0 = {
   }
 }
 
-// @punch/branches.objects
+// @gip/branches.objects
 const encoding1_6 = c.array(c.string)
 
-// @punch/branches
+// @gip/branches
 const encoding1 = {
   preencode(state, m) {
     c.string.preencode(state, m.name)
@@ -93,7 +93,7 @@ const encoding1 = {
   }
 }
 
-// @punch/files
+// @gip/files
 const encoding2 = {
   preencode(state, m) {
     c.string.preencode(state, m.branch)
@@ -149,7 +149,7 @@ const encoding3_enum = {
   tag: 'tag'
 }
 
-// @punch/object-type enum
+// @gip/object-type enum
 const encoding3 = {
   preencode (state, m) {
     state.end++ // max enum is 4 so always one byte
@@ -187,7 +187,7 @@ const encoding3 = {
   }
 }
 
-// @punch/objects
+// @gip/objects
 const encoding4 = {
   preencode(state, m) {
     c.string.preencode(state, m.oid)
@@ -232,7 +232,7 @@ function decode(name, buffer, v = VERSION) {
 
 function getEnum(name) {
   switch (name) {
-    case '@punch/object-type':
+    case '@gip/object-type':
       return encoding3_enum
     default:
       throw new Error('Enum not found ' + name)
@@ -241,15 +241,15 @@ function getEnum(name) {
 
 function getEncoding(name) {
   switch (name) {
-    case '@punch/repos':
+    case '@gip/repos':
       return encoding0
-    case '@punch/branches':
+    case '@gip/branches':
       return encoding1
-    case '@punch/files':
+    case '@gip/files':
       return encoding2
-    case '@punch/object-type':
+    case '@gip/object-type':
       return encoding3
-    case '@punch/objects':
+    case '@gip/objects':
       return encoding4
     default:
       throw new Error('Encoder not found ' + name)

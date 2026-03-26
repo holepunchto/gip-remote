@@ -11,7 +11,7 @@ const VERSION = 1
 // eslint-disable-next-line no-unused-vars
 let version = VERSION
 
-// @punch/repos
+// @gip/repos
 const encoding0 = {
   preencode(state, m) {
     c.string.preencode(state, m.name)
@@ -45,10 +45,10 @@ const encoding0 = {
   }
 }
 
-// @punch/branches.objects
+// @gip/branches.objects
 const encoding1_6 = c.array(c.string)
 
-// @punch/branches
+// @gip/branches
 const encoding1 = {
   preencode(state, m) {
     c.string.preencode(state, m.name)
@@ -93,7 +93,7 @@ const encoding1 = {
   }
 }
 
-// @punch/files
+// @gip/files
 const encoding2 = {
   preencode(state, m) {
     c.string.preencode(state, m.branch)
@@ -149,7 +149,7 @@ const encoding3_enum = {
   tag: 'tag'
 }
 
-// @punch/object-type enum
+// @gip/object-type enum
 const encoding3 = {
   preencode (state, m) {
     state.end++ // max enum is 4 so always one byte
@@ -187,7 +187,7 @@ const encoding3 = {
   }
 }
 
-// @punch/objects
+// @gip/objects
 const encoding4 = {
   preencode(state, m) {
     c.string.preencode(state, m.oid)
@@ -216,7 +216,7 @@ const encoding4 = {
   }
 }
 
-// @punch/repos/hyperdb#0
+// @gip/repos/hyperdb#0
 const encoding5 = {
   preencode(state, m) {
     c.buffer.preencode(state, m.key)
@@ -247,10 +247,10 @@ const encoding5 = {
   }
 }
 
-// @punch/branches/hyperdb#1.objects
+// @gip/branches/hyperdb#1.objects
 const encoding6_6 = encoding1_6
 
-// @punch/branches/hyperdb#1
+// @gip/branches/hyperdb#1
 const encoding6 = {
   preencode(state, m) {
     c.string.preencode(state, m.commitOid)
@@ -292,7 +292,7 @@ const encoding6 = {
   }
 }
 
-// @punch/files/hyperdb#2
+// @gip/files/hyperdb#2
 const encoding7 = {
   preencode(state, m) {
     c.string.preencode(state, m.oid)
@@ -335,7 +335,7 @@ const encoding7 = {
   }
 }
 
-// @punch/objects/hyperdb#3
+// @gip/objects/hyperdb#3
 const encoding8 = {
   preencode(state, m) {
     encoding3.preencode(state, m.type)
@@ -377,7 +377,7 @@ function decode(name, buffer, v = VERSION) {
 
 function getEnum(name) {
   switch (name) {
-    case '@punch/object-type':
+    case '@gip/object-type':
       return encoding3_enum
     default:
       throw new Error('Enum not found ' + name)
@@ -386,23 +386,23 @@ function getEnum(name) {
 
 function getEncoding(name) {
   switch (name) {
-    case '@punch/repos':
+    case '@gip/repos':
       return encoding0
-    case '@punch/branches':
+    case '@gip/branches':
       return encoding1
-    case '@punch/files':
+    case '@gip/files':
       return encoding2
-    case '@punch/object-type':
+    case '@gip/object-type':
       return encoding3
-    case '@punch/objects':
+    case '@gip/objects':
       return encoding4
-    case '@punch/repos/hyperdb#0':
+    case '@gip/repos/hyperdb#0':
       return encoding5
-    case '@punch/branches/hyperdb#1':
+    case '@gip/branches/hyperdb#1':
       return encoding6
-    case '@punch/files/hyperdb#2':
+    case '@gip/files/hyperdb#2':
       return encoding7
-    case '@punch/objects/hyperdb#3':
+    case '@gip/objects/hyperdb#3':
       return encoding8
     default:
       throw new Error('Encoder not found ' + name)

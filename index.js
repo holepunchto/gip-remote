@@ -4,7 +4,7 @@ const Hyperbee = require('hyperbee2')
 const { GitTree } = require('rebuild-git')
 const def = require('./schema/hyperdb/index')
 const GitPearLink = require('../lib/link')
-const GipRemoteDrive = require('./lib/drive')
+const RemoteDrive = require('./lib/drive')
 
 // --- Git commit parser ---
 
@@ -67,10 +67,9 @@ function walkTree(objects, treeOid, prefix) {
 
 // --- Remote DB ---
 
-class PunchRemoteDB extends ReadyResource {
+class Remote extends ReadyResource {
   _swarm = null
   _store = null
-  _bee = null
   _db = null
   _key = null
 
@@ -84,8 +83,8 @@ class PunchRemoteDB extends ReadyResource {
     this._blind = args.blind
     this._key = args.key
 
-    this._bee = new Hyperbee(this._store, { key: args.key })
-    this._db = HyperDB.bee2(this._bee, def)
+    const bee = new Hyperbee(this._store, { key: args.key })
+    this._db = HyperDB.bee2(bee, def)
 
     this._onconnection = (conn) => {
       this._store.replicate(conn)
@@ -96,7 +95,6 @@ class PunchRemoteDB extends ReadyResource {
   }
 
   async _open() {
-    await this._bee.ready()
     await this._db.ready()
 
     this._topic = this._swarm.join(this.discoveryKey)
@@ -110,7 +108,6 @@ class PunchRemoteDB extends ReadyResource {
     if (this._topic) await this._topic.destroy()
 
     await this._db.close()
-    await this._bee.close()
   }
 
   get name() {
@@ -136,13 +133,13 @@ class PunchRemoteDB extends ReadyResource {
   // --- Objects ---
 
   async getObject(oid) {
-    return this._db.get('@punch/objects', { oid })
+    return this._db.get('@gip/objects', { oid })
   }
 
   // --- Refs / Branches ---
 
   async getAllRefs() {
-    const branches = this._db.find('@punch/branches')
+    const branches = this._db.find('@gip/branches')
     const refs = []
 
     for await (const b of branches) {
@@ -156,7 +153,7 @@ class PunchRemoteDB extends ReadyResource {
   }
 
   async getBranchRef(branch) {
-    const b = await this._db.get('@punch/branches', { name: branch })
+    const b = await this._db.get('@gip/branches', { name: branch })
     if (!b) return null
     return { ref: `refs/heads/${b.name}`, oid: b.commitOid }
   }
@@ -169,7 +166,7 @@ class PunchRemoteDB extends ReadyResource {
       const existing = await this.getObject(oid)
       if (existing) continue
 
-      await this._db.insert('@punch/objects', {
+      await this._db.insert('@gip/objects', {
         oid,
         type: obj.type,
         size: obj.size,
@@ -189,7 +186,7 @@ class PunchRemoteDB extends ReadyResource {
 
     // 4. Insert file records
     for (const file of files) {
-      await this._db.insert('@punch/files', {
+      await this._db.insert('@gip/files', {
         branch: branchName,
         path: file.path,
         oid: file.oid,
@@ -202,7 +199,7 @@ class PunchRemoteDB extends ReadyResource {
     }
 
     // 5. Insert branch record
-    await this._db.insert('@punch/branches', {
+    await this._db.insert('@gip/branches', {
       name: branchName,
       commitOid,
       treeOid: commit.tree,
@@ -219,7 +216,7 @@ class PunchRemoteDB extends ReadyResource {
   // --- Fetch support ---
 
   async getRefObjects(commitOid, onLoad) {
-    const branches = this._db.find('@punch/branches')
+    const branches = this._db.find('@gip/branches')
     let branch = null
 
     for await (const b of branches) {
@@ -249,10 +246,10 @@ class PunchRemoteDB extends ReadyResource {
   // --- Drive ---
 
   async toDrive(branch) {
-    const b = await this._db.get('@punch/branches', { name: branch })
+    const b = await this._db.get('@gip/branches', { name: branch })
     if (!b) return null
 
-    const drive = new GipRemoteDrive(this._db, { branch })
+    const drive = new RemoteDrive(this._db, { branch })
     await drive.ready()
     return drive
   }

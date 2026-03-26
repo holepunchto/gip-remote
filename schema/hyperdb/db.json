@@ -4,13 +4,13 @@
   "schema": [
     {
       "name": "repos",
-      "namespace": "punch",
+      "namespace": "gip",
       "id": 0,
       "type": 1,
       "version": 1,
       "versionField": null,
       "indexes": [],
-      "schema": "@punch/repos",
+      "schema": "@gip/repos",
       "derived": false,
       "key": [
         "name"
@@ -19,13 +19,13 @@
     },
     {
       "name": "branches",
-      "namespace": "punch",
+      "namespace": "gip",
       "id": 1,
       "type": 1,
       "version": 1,
       "versionField": null,
       "indexes": [],
-      "schema": "@punch/branches",
+      "schema": "@gip/branches",
       "derived": false,
       "key": [
         "name"
@@ -34,15 +34,15 @@
     },
     {
       "name": "files",
-      "namespace": "punch",
+      "namespace": "gip",
       "id": 2,
       "type": 1,
       "version": 1,
       "versionField": null,
       "indexes": [
-        "@punch/files-by-branch"
+        "@gip/files-by-branch"
       ],
-      "schema": "@punch/files",
+      "schema": "@gip/files",
       "derived": false,
       "key": [
         "branch",
@@ -52,13 +52,13 @@
     },
     {
       "name": "objects",
-      "namespace": "punch",
+      "namespace": "gip",
       "id": 3,
       "type": 1,
       "version": 1,
       "versionField": null,
       "indexes": [],
-      "schema": "@punch/objects",
+      "schema": "@gip/objects",
       "derived": false,
       "key": [
         "oid"
@@ -67,11 +67,11 @@
     },
     {
       "name": "files-by-branch",
-      "namespace": "punch",
+      "namespace": "gip",
       "id": 4,
       "type": 2,
       "version": 1,
-      "collection": "@punch/files",
+      "collection": "@gip/files",
       "unique": false,
       "deprecated": false,
       "key": [

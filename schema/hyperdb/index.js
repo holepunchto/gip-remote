@@ -6,7 +6,7 @@ const { version, getEncoding, setVersion } = require('./messages.js')
 
 const versions = { schema: version, db: 1 }
 
-// '@punch/repos' collection key
+// '@gip/repos' collection key
 const collection0_key = new IndexEncoder([
   IndexEncoder.STRING
 ], { prefix: 0 })
@@ -16,10 +16,10 @@ function collection0_indexify (record) {
   return a === undefined ? [] : [a]
 }
 
-// '@punch/repos' value encoding
-const collection0_enc = getEncoding('@punch/repos/hyperdb#0')
+// '@gip/repos' value encoding
+const collection0_enc = getEncoding('@gip/repos/hyperdb#0')
 
-// '@punch/repos' reconstruction function
+// '@gip/repos' reconstruction function
 function collection0_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection0_key.decode(keyBuf)
   setVersion(schemaVersion)
@@ -31,7 +31,7 @@ function collection0_reconstruct (schemaVersion, keyBuf, valueBuf) {
   record.name = key[0]
   return record
 }
-// '@punch/repos' key reconstruction function
+// '@gip/repos' key reconstruction function
 function collection0_reconstruct_key (keyBuf) {
   const key = collection0_key.decode(keyBuf)
   return {
@@ -39,9 +39,9 @@ function collection0_reconstruct_key (keyBuf) {
   }
 }
 
-// '@punch/repos'
+// '@gip/repos'
 const collection0 = {
-  name: '@punch/repos',
+  name: '@gip/repos',
   id: 0,
   version: 1,
   encodeKey (record) {
@@ -73,7 +73,7 @@ const collection0 = {
   decodedVersion: 0
 }
 
-// '@punch/branches' collection key
+// '@gip/branches' collection key
 const collection1_key = new IndexEncoder([
   IndexEncoder.STRING
 ], { prefix: 1 })
@@ -83,10 +83,10 @@ function collection1_indexify (record) {
   return a === undefined ? [] : [a]
 }
 
-// '@punch/branches' value encoding
-const collection1_enc = getEncoding('@punch/branches/hyperdb#1')
+// '@gip/branches' value encoding
+const collection1_enc = getEncoding('@gip/branches/hyperdb#1')
 
-// '@punch/branches' reconstruction function
+// '@gip/branches' reconstruction function
 function collection1_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection1_key.decode(keyBuf)
   setVersion(schemaVersion)
@@ -98,7 +98,7 @@ function collection1_reconstruct (schemaVersion, keyBuf, valueBuf) {
   record.name = key[0]
   return record
 }
-// '@punch/branches' key reconstruction function
+// '@gip/branches' key reconstruction function
 function collection1_reconstruct_key (keyBuf) {
   const key = collection1_key.decode(keyBuf)
   return {
@@ -106,9 +106,9 @@ function collection1_reconstruct_key (keyBuf) {
   }
 }
 
-// '@punch/branches'
+// '@gip/branches'
 const collection1 = {
-  name: '@punch/branches',
+  name: '@gip/branches',
   id: 1,
   version: 1,
   encodeKey (record) {
@@ -140,7 +140,7 @@ const collection1 = {
   decodedVersion: 0
 }
 
-// '@punch/files' collection key
+// '@gip/files' collection key
 const collection2_key = new IndexEncoder([
   IndexEncoder.STRING,
   IndexEncoder.STRING
@@ -160,10 +160,10 @@ function collection2_indexify (record) {
   return arr
 }
 
-// '@punch/files' value encoding
-const collection2_enc = getEncoding('@punch/files/hyperdb#2')
+// '@gip/files' value encoding
+const collection2_enc = getEncoding('@gip/files/hyperdb#2')
 
-// '@punch/files' reconstruction function
+// '@gip/files' reconstruction function
 function collection2_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection2_key.decode(keyBuf)
   setVersion(schemaVersion)
@@ -176,7 +176,7 @@ function collection2_reconstruct (schemaVersion, keyBuf, valueBuf) {
   record.path = key[1]
   return record
 }
-// '@punch/files' key reconstruction function
+// '@gip/files' key reconstruction function
 function collection2_reconstruct_key (keyBuf) {
   const key = collection2_key.decode(keyBuf)
   return {
@@ -185,9 +185,9 @@ function collection2_reconstruct_key (keyBuf) {
   }
 }
 
-// '@punch/files'
+// '@gip/files'
 const collection2 = {
-  name: '@punch/files',
+  name: '@gip/files',
   id: 2,
   version: 1,
   encodeKey (record) {
@@ -219,7 +219,7 @@ const collection2 = {
   decodedVersion: 0
 }
 
-// '@punch/objects' collection key
+// '@gip/objects' collection key
 const collection3_key = new IndexEncoder([
   IndexEncoder.STRING
 ], { prefix: 3 })
@@ -229,10 +229,10 @@ function collection3_indexify (record) {
   return a === undefined ? [] : [a]
 }
 
-// '@punch/objects' value encoding
-const collection3_enc = getEncoding('@punch/objects/hyperdb#3')
+// '@gip/objects' value encoding
+const collection3_enc = getEncoding('@gip/objects/hyperdb#3')
 
-// '@punch/objects' reconstruction function
+// '@gip/objects' reconstruction function
 function collection3_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection3_key.decode(keyBuf)
   setVersion(schemaVersion)
@@ -244,7 +244,7 @@ function collection3_reconstruct (schemaVersion, keyBuf, valueBuf) {
   record.oid = key[0]
   return record
 }
-// '@punch/objects' key reconstruction function
+// '@gip/objects' key reconstruction function
 function collection3_reconstruct_key (keyBuf) {
   const key = collection3_key.decode(keyBuf)
   return {
@@ -252,9 +252,9 @@ function collection3_reconstruct_key (keyBuf) {
   }
 }
 
-// '@punch/objects'
+// '@gip/objects'
 const collection3 = {
-  name: '@punch/objects',
+  name: '@gip/objects',
   id: 3,
   version: 1,
   encodeKey (record) {
@@ -286,7 +286,7 @@ const collection3 = {
   decodedVersion: 0
 }
 
-// '@punch/files-by-branch' collection key
+// '@gip/files-by-branch' collection key
 const index4_key = new IndexEncoder([
   IndexEncoder.STRING,
   IndexEncoder.STRING,
@@ -311,9 +311,9 @@ function index4_indexify (record) {
   return arr
 }
 
-// '@punch/files-by-branch'
+// '@gip/files-by-branch'
 const index4 = {
-  name: '@punch/files-by-branch',
+  name: '@gip/files-by-branch',
   version: 1,
   id: 4,
   encodeKey (record) {
@@ -352,17 +352,17 @@ module.exports = { versions, collections, indexes, resolveCollection, resolveInd
 
 function resolveCollection (name) {
   switch (name) {
-    case '@punch/repos': return collection0
-    case '@punch/branches': return collection1
-    case '@punch/files': return collection2
-    case '@punch/objects': return collection3
+    case '@gip/repos': return collection0
+    case '@gip/branches': return collection1
+    case '@gip/files': return collection2
+    case '@gip/objects': return collection3
     default: return null
   }
 }
 
 function resolveIndex (name) {
   switch (name) {
-    case '@punch/files-by-branch': return index4
+    case '@gip/files-by-branch': return index4
     default: return null
   }
 }

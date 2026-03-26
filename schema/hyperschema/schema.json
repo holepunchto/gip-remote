@@ -3,7 +3,7 @@
   "schema": [
     {
       "name": "repos",
-      "namespace": "punch",
+      "namespace": "gip",
       "compact": true,
       "flagsPosition": 2,
       "fields": [
@@ -35,7 +35,7 @@
     },
     {
       "name": "branches",
-      "namespace": "punch",
+      "namespace": "gip",
       "compact": true,
       "flagsPosition": 3,
       "fields": [
@@ -85,7 +85,7 @@
     },
     {
       "name": "files",
-      "namespace": "punch",
+      "namespace": "gip",
       "compact": true,
       "flagsPosition": 5,
       "fields": [
@@ -141,7 +141,7 @@
     },
     {
       "name": "object-type",
-      "namespace": "punch",
+      "namespace": "gip",
       "offset": 1,
       "enum": [
         {
@@ -165,7 +165,7 @@
     },
     {
       "name": "objects",
-      "namespace": "punch",
+      "namespace": "gip",
       "compact": true,
       "flagsPosition": -1,
       "fields": [
@@ -178,7 +178,7 @@
         {
           "name": "type",
           "required": true,
-          "type": "@punch/object-type",
+          "type": "@gip/object-type",
           "version": 1
         },
         {
