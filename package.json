@@ -1,0 +1,25 @@
+{
+  "name": "gip-remote",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "prettier": "^3.8.1",
+    "prettier-config-holepunch": "^2.0.0"
+  },
+  "dependencies": {
+    "hyperbee2": "^2.8.0",
+    "hyperdb": "^6.3.0",
+    "mirror-drive": "^1.13.0",
+    "ready-resource": "^1.2.0",
+    "rebuild-git": "^1.0.0",
+    "streamx": "^2.25.0"
+  }
+}
