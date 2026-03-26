@@ -3,7 +3,6 @@ const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
 const { GitTree } = require('rebuild-git')
 const def = require('./schema/hyperdb/index')
-const GitPearLink = require('../lib/link')
 const RemoteDrive = require('./lib/drive')
 
 // --- Git commit parser ---
@@ -114,20 +113,16 @@ class Remote extends ReadyResource {
     return this._name
   }
   get core() {
-    return this._bee.core
+    return this._db.core
   }
   get key() {
-    return this._bee.core.key
+    return this._db.core.key
   }
   get discoveryKey() {
-    return this._bee.core.discoveryKey
+    return this._db.core.discoveryKey
   }
   get availablePeers() {
-    return this._bee.core.peers.length
-  }
-
-  get url() {
-    return GitPearLink.serialize({ key: this.key, repo: this.name })
+    return this._db.core.peers.length
   }
 
   // --- Objects ---
@@ -277,8 +272,8 @@ class Remote extends ReadyResource {
 }
 
 module.exports = {
-  PunchRemoteDB,
-  PunchDrive,
+  Remote,
+  RemoteDrive,
   parseCommit,
   walkTree
 }

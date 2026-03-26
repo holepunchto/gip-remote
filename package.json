@@ -4,15 +4,20 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "brittle test/*.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "brittle": "^3.19.1",
+    "corestore": "^7.9.2",
+    "hyperdht": "^6.29.6",
+    "hyperswarm": "^4.17.0",
     "prettier": "^3.8.1",
-    "prettier-config-holepunch": "^2.0.0"
+    "prettier-config-holepunch": "^2.0.0",
+    "test-tmp": "^1.4.0"
   },
   "dependencies": {
     "hyperbee2": "^2.8.0",
