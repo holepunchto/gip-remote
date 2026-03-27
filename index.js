@@ -1,6 +1,7 @@
 const ReadyResource = require('ready-resource')
 const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
+const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
@@ -38,17 +39,25 @@ class Remote extends ReadyResource {
   get name() {
     return this._name
   }
+
   get core() {
     return this._db.core
   }
+
   get key() {
     return this._db.core.key
   }
+
   get discoveryKey() {
     return this._db.core.discoveryKey
   }
+
   get availablePeers() {
     return this._db.core.peers.length
+  }
+
+  get url() {
+    return `git+pear://${z32.encode(this.key)}/${this.name}`
   }
 
   // --- Objects ---
