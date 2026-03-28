@@ -211,6 +211,55 @@ test('push is idempotent for objects', async (t) => {
   t.is(blob.data.toString(), 'hello world')
 })
 
+// --- deleteBranch ---
+
+test('deleteBranch removes branch and files', async (t) => {
+  const remote = await createRemote(t, { name: 'delete-test' })
+  const objects = makeTestObjects()
+  await remote.push('main', OID_COMMIT, objects)
+
+  const before = await remote.getBranchRef('main')
+  t.ok(before, 'branch exists before delete')
+
+  const deleted = await remote.deleteBranch('main')
+  t.is(deleted, true)
+
+  const after = await remote.getBranchRef('main')
+  t.is(after, null, 'branch gone after delete')
+
+  const refs = await remote.getAllRefs()
+  const main = refs.find((r) => r.ref === 'refs/heads/main')
+  t.absent(main, 'main not in refs')
+
+  const drive = await remote.toDrive('main')
+  t.is(drive, null, 'drive returns null after delete')
+})
+
+test('deleteBranch returns false for missing branch', async (t) => {
+  const remote = await createRemote(t, { name: 'delete-missing' })
+  const deleted = await remote.deleteBranch('nonexistent')
+  t.is(deleted, false)
+})
+
+test('deleteBranch only removes targeted branch', async (t) => {
+  const remote = await createRemote(t, { name: 'delete-multi' })
+  const objects = makeTestObjects()
+  await remote.push('main', OID_COMMIT, objects)
+  await remote.push('feature', OID_COMMIT, objects)
+
+  await remote.deleteBranch('feature')
+
+  const main = await remote.getBranchRef('main')
+  t.ok(main, 'main still exists')
+
+  const feature = await remote.getBranchRef('feature')
+  t.is(feature, null, 'feature is gone')
+
+  // main files still accessible
+  const drive = await remote.toDrive('main')
+  t.ok(drive, 'main drive still works')
+})
+
 // --- Drive ---
 
 test('toDrive returns null for missing branch', async (t) => {
