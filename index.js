@@ -88,6 +88,22 @@ class Remote extends ReadyResource {
     return { ref: `refs/heads/${b.name}`, oid: b.commitOid }
   }
 
+  async deleteBranch(branchName) {
+    const branch = await this._db.get('@gip/branches', { name: branchName })
+    if (!branch) return false
+
+    await this._db.delete('@gip/branches', { name: branchName })
+
+    // Remove file records for this branch
+    const files = this._db.find('@gip/files', { branch: branchName })
+    for await (const file of files) {
+      await this._db.delete('@gip/files', { branch: branchName, path: file.path })
+    }
+
+    await this._db.flush()
+    return true
+  }
+
   // --- Push: store objects + index branch + files ---
 
   async push(branchName, commitOid, objects) {
