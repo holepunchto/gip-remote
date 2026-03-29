@@ -24,9 +24,7 @@ async function createRemote(t, opts = {}) {
     store.replicate(conn)
   })
 
-  const key = z32.encode(b4a.alloc(32, 'test'))
-
-  const remote = new Remote(store, `git+pear://${key}/${opts.name}`)
+  const remote = new Remote(store, opts.name ? opts.name : opts)
   t.teardown(() => remote.close())
   await remote.ready()
 

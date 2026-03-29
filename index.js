@@ -18,12 +18,19 @@ class Remote extends ReadyResource {
 
     this._link =
       typeof link === 'string' && link.startsWith('git+pear:') ? GitPearLink.parse(link) : link
-    const config = typeof this._link === 'string' ? { name: this._link } : this._link
+
+    let config
+    if (typeof this._link === 'string') {
+      this._name = this._link
+      config = {}
+    } else {
+      this._name = this._link.pathname?.split('/').slice(1)[0]
+      config = this._link.drive
+    }
 
     const bee = new Hyperbee(store, config, { autoUpdate: true })
     this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
 
-    this._name = config.name || config.pathname.split('/').slice(1)[0]
     this._timeout = opts.timeout || 240_000
     this._blind = opts.blind
   }
@@ -202,6 +209,10 @@ class Remote extends ReadyResource {
 
   // --- Peer discovery ---
 
+  async update() {
+    await this._db.update()
+  }
+
   async waitForPeers() {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -213,6 +224,7 @@ class Remote extends ReadyResource {
         if (this.availablePeers > 0) {
           clearInterval(interval)
           clearTimeout(timeout)
+          await this._db.update()
           resolve()
         } else {
           await this._db.update()
