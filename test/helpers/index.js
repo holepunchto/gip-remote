@@ -1,8 +1,6 @@
 const createTestnet = require('hyperdht/testnet')
 const Hyperswarm = require('hyperswarm')
 const Corestore = require('corestore')
-const b4a = require('b4a')
-const z32 = require('z32')
 const tmp = require('test-tmp')
 const { Remote } = require('../..')
 

@@ -28,7 +28,10 @@ await remote.ready()
 console.log(remote.key) // public key
 
 // remote remote!
-const remote2 = new Remote(store.namespace('my-other-repo'), 'git+pear://0.1.iain5rkqfenyjrcod53tb61cq3egpwbk6cnd15ca3pqm39g7wf1y/my-other-repo')
+const remote2 = new Remote(
+  store.namespace('my-other-repo'),
+  'git+pear://0.1.iain5rkqfenyjrcod53tb61cq3egpwbk6cnd15ca3pqm39g7wf1y/my-other-repo'
+)
 await remote2.ready()
 ```
 
