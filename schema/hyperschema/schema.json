@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "schema": [
     {
       "name": "repos",
@@ -192,6 +192,20 @@
           "required": true,
           "type": "buffer",
           "version": 1
+        }
+      ]
+    },
+    {
+      "name": "head",
+      "namespace": "gip",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "branch",
+          "required": true,
+          "type": "string",
+          "version": 2
         }
       ]
     }

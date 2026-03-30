@@ -4,12 +4,14 @@
 const { IndexEncoder, c, b4a } = require('hyperdb/runtime')
 const { version, getEncoding, setVersion } = require('./messages.js')
 
-const versions = { schema: version, db: 1 }
+const versions = { schema: version, db: 2 }
 
 // '@gip/repos' collection key
-const collection0_key = new IndexEncoder([IndexEncoder.STRING], { prefix: 0 })
+const collection0_key = new IndexEncoder([
+  IndexEncoder.STRING
+], { prefix: 0 })
 
-function collection0_indexify(record) {
+function collection0_indexify (record) {
   const a = record.name
   return a === undefined ? [] : [a]
 }
@@ -18,7 +20,7 @@ function collection0_indexify(record) {
 const collection0_enc = getEncoding('@gip/repos/hyperdb#0')
 
 // '@gip/repos' reconstruction function
-function collection0_reconstruct(schemaVersion, keyBuf, valueBuf) {
+function collection0_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection0_key.decode(keyBuf)
   setVersion(schemaVersion)
   const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
@@ -30,7 +32,7 @@ function collection0_reconstruct(schemaVersion, keyBuf, valueBuf) {
   return record
 }
 // '@gip/repos' key reconstruction function
-function collection0_reconstruct_key(keyBuf) {
+function collection0_reconstruct_key (keyBuf) {
   const key = collection0_key.decode(keyBuf)
   return {
     name: key[0]
@@ -42,11 +44,11 @@ const collection0 = {
   name: '@gip/repos',
   id: 0,
   version: 1,
-  encodeKey(record) {
+  encodeKey (record) {
     const key = [record.name]
     return collection0_key.encode(key)
   },
-  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
     return collection0_key.encodeRange({
       gt: gt ? collection0_indexify(gt) : null,
       lt: lt ? collection0_indexify(lt) : null,
@@ -54,7 +56,7 @@ const collection0 = {
       lte: lte ? collection0_indexify(lte) : null
     })
   },
-  encodeValue(schemaVersion, collectionVersion, record) {
+  encodeValue (schemaVersion, collectionVersion, record) {
     setVersion(schemaVersion)
     const state = { start: 0, end: 2, buffer: null }
     collection0_enc.preencode(state, record)
@@ -72,9 +74,11 @@ const collection0 = {
 }
 
 // '@gip/branches' collection key
-const collection1_key = new IndexEncoder([IndexEncoder.STRING], { prefix: 1 })
+const collection1_key = new IndexEncoder([
+  IndexEncoder.STRING
+], { prefix: 1 })
 
-function collection1_indexify(record) {
+function collection1_indexify (record) {
   const a = record.name
   return a === undefined ? [] : [a]
 }
@@ -83,7 +87,7 @@ function collection1_indexify(record) {
 const collection1_enc = getEncoding('@gip/branches/hyperdb#1')
 
 // '@gip/branches' reconstruction function
-function collection1_reconstruct(schemaVersion, keyBuf, valueBuf) {
+function collection1_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection1_key.decode(keyBuf)
   setVersion(schemaVersion)
   const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
@@ -95,7 +99,7 @@ function collection1_reconstruct(schemaVersion, keyBuf, valueBuf) {
   return record
 }
 // '@gip/branches' key reconstruction function
-function collection1_reconstruct_key(keyBuf) {
+function collection1_reconstruct_key (keyBuf) {
   const key = collection1_key.decode(keyBuf)
   return {
     name: key[0]
@@ -107,11 +111,11 @@ const collection1 = {
   name: '@gip/branches',
   id: 1,
   version: 1,
-  encodeKey(record) {
+  encodeKey (record) {
     const key = [record.name]
     return collection1_key.encode(key)
   },
-  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
     return collection1_key.encodeRange({
       gt: gt ? collection1_indexify(gt) : null,
       lt: lt ? collection1_indexify(lt) : null,
@@ -119,7 +123,7 @@ const collection1 = {
       lte: lte ? collection1_indexify(lte) : null
     })
   },
-  encodeValue(schemaVersion, collectionVersion, record) {
+  encodeValue (schemaVersion, collectionVersion, record) {
     setVersion(schemaVersion)
     const state = { start: 0, end: 2, buffer: null }
     collection1_enc.preencode(state, record)
@@ -137,9 +141,12 @@ const collection1 = {
 }
 
 // '@gip/files' collection key
-const collection2_key = new IndexEncoder([IndexEncoder.STRING, IndexEncoder.STRING], { prefix: 2 })
+const collection2_key = new IndexEncoder([
+  IndexEncoder.STRING,
+  IndexEncoder.STRING
+], { prefix: 2 })
 
-function collection2_indexify(record) {
+function collection2_indexify (record) {
   const arr = []
 
   const a0 = record.branch
@@ -157,7 +164,7 @@ function collection2_indexify(record) {
 const collection2_enc = getEncoding('@gip/files/hyperdb#2')
 
 // '@gip/files' reconstruction function
-function collection2_reconstruct(schemaVersion, keyBuf, valueBuf) {
+function collection2_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection2_key.decode(keyBuf)
   setVersion(schemaVersion)
   const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
@@ -170,7 +177,7 @@ function collection2_reconstruct(schemaVersion, keyBuf, valueBuf) {
   return record
 }
 // '@gip/files' key reconstruction function
-function collection2_reconstruct_key(keyBuf) {
+function collection2_reconstruct_key (keyBuf) {
   const key = collection2_key.decode(keyBuf)
   return {
     branch: key[0],
@@ -183,11 +190,11 @@ const collection2 = {
   name: '@gip/files',
   id: 2,
   version: 1,
-  encodeKey(record) {
+  encodeKey (record) {
     const key = [record.branch, record.path]
     return collection2_key.encode(key)
   },
-  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
     return collection2_key.encodeRange({
       gt: gt ? collection2_indexify(gt) : null,
       lt: lt ? collection2_indexify(lt) : null,
@@ -195,7 +202,7 @@ const collection2 = {
       lte: lte ? collection2_indexify(lte) : null
     })
   },
-  encodeValue(schemaVersion, collectionVersion, record) {
+  encodeValue (schemaVersion, collectionVersion, record) {
     setVersion(schemaVersion)
     const state = { start: 0, end: 2, buffer: null }
     collection2_enc.preencode(state, record)
@@ -213,9 +220,11 @@ const collection2 = {
 }
 
 // '@gip/objects' collection key
-const collection3_key = new IndexEncoder([IndexEncoder.STRING], { prefix: 3 })
+const collection3_key = new IndexEncoder([
+  IndexEncoder.STRING
+], { prefix: 3 })
 
-function collection3_indexify(record) {
+function collection3_indexify (record) {
   const a = record.oid
   return a === undefined ? [] : [a]
 }
@@ -224,7 +233,7 @@ function collection3_indexify(record) {
 const collection3_enc = getEncoding('@gip/objects/hyperdb#3')
 
 // '@gip/objects' reconstruction function
-function collection3_reconstruct(schemaVersion, keyBuf, valueBuf) {
+function collection3_reconstruct (schemaVersion, keyBuf, valueBuf) {
   const key = collection3_key.decode(keyBuf)
   setVersion(schemaVersion)
   const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
@@ -236,7 +245,7 @@ function collection3_reconstruct(schemaVersion, keyBuf, valueBuf) {
   return record
 }
 // '@gip/objects' key reconstruction function
-function collection3_reconstruct_key(keyBuf) {
+function collection3_reconstruct_key (keyBuf) {
   const key = collection3_key.decode(keyBuf)
   return {
     oid: key[0]
@@ -248,11 +257,11 @@ const collection3 = {
   name: '@gip/objects',
   id: 3,
   version: 1,
-  encodeKey(record) {
+  encodeKey (record) {
     const key = [record.oid]
     return collection3_key.encode(key)
   },
-  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
     return collection3_key.encodeRange({
       gt: gt ? collection3_indexify(gt) : null,
       lt: lt ? collection3_indexify(lt) : null,
@@ -260,7 +269,7 @@ const collection3 = {
       lte: lte ? collection3_indexify(lte) : null
     })
   },
-  encodeValue(schemaVersion, collectionVersion, record) {
+  encodeValue (schemaVersion, collectionVersion, record) {
     setVersion(schemaVersion)
     const state = { start: 0, end: 2, buffer: null }
     collection3_enc.preencode(state, record)
@@ -278,12 +287,13 @@ const collection3 = {
 }
 
 // '@gip/files-by-branch' collection key
-const index4_key = new IndexEncoder(
-  [IndexEncoder.STRING, IndexEncoder.STRING, IndexEncoder.STRING],
-  { prefix: 4 }
-)
+const index4_key = new IndexEncoder([
+  IndexEncoder.STRING,
+  IndexEncoder.STRING,
+  IndexEncoder.STRING
+], { prefix: 4 })
 
-function index4_indexify(record) {
+function index4_indexify (record) {
   const arr = []
 
   const a0 = record.branch
@@ -306,10 +316,10 @@ const index4 = {
   name: '@gip/files-by-branch',
   version: 1,
   id: 4,
-  encodeKey(record) {
+  encodeKey (record) {
     return index4_key.encode(index4_indexify(record))
   },
-  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
     return index4_key.encodeRange({
       gt: gt ? index4_indexify(gt) : null,
       lt: lt ? index4_indexify(lt) : null,
@@ -318,7 +328,7 @@ const index4 = {
     })
   },
   encodeValue: (record) => index4.collection.encodeKey(record),
-  encodeIndexKeys(record, context) {
+  encodeIndexKeys (record, context) {
     return [index4_key.encode([record.branch, record.branch, record.path])]
   },
   reconstruct: (keyBuf, valueBuf) => valueBuf,
@@ -327,32 +337,94 @@ const index4 = {
 }
 collection2.indexes.push(index4)
 
-const collections = [collection0, collection1, collection2, collection3]
+// '@gip/head' collection key
+const collection5_key = new IndexEncoder([
+], { prefix: 5 })
 
-const indexes = [index4]
+function collection5_indexify (record) {
+  return []
+}
+
+// '@gip/head' value encoding
+const collection5_enc = getEncoding('@gip/head')
+
+// '@gip/head' reconstruction function
+function collection5_reconstruct (schemaVersion, keyBuf, valueBuf) {
+  setVersion(schemaVersion)
+  const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
+  const type = c.uint.decode(state)
+  if (type !== 0) throw new Error('Unknown collection type: ' + type)
+  collection5.decodedVersion = c.uint.decode(state)
+  const record = collection5_enc.decode(state)
+  return record
+}
+// '@gip/head' key reconstruction function
+function collection5_reconstruct_key (keyBuf) {
+  return {}
+}
+
+// '@gip/head'
+const collection5 = {
+  name: '@gip/head',
+  id: 5,
+  version: 2,
+  encodeKey (record) {
+    const key = []
+    return collection5_key.encode(key)
+  },
+  encodeKeyRange ({ gt, lt, gte, lte } = {}) {
+    return collection5_key.encodeRange({
+      gt: gt ? collection5_indexify(gt) : null,
+      lt: lt ? collection5_indexify(lt) : null,
+      gte: gte ? collection5_indexify(gte) : null,
+      lte: lte ? collection5_indexify(lte) : null
+    })
+  },
+  encodeValue (schemaVersion, collectionVersion, record) {
+    setVersion(schemaVersion)
+    const state = { start: 0, end: 2, buffer: null }
+    collection5_enc.preencode(state, record)
+    state.buffer = b4a.allocUnsafe(state.end)
+    state.buffer[state.start++] = 0
+    state.buffer[state.start++] = collectionVersion
+    collection5_enc.encode(state, record)
+    return state.buffer
+  },
+  trigger: null,
+  reconstruct: collection5_reconstruct,
+  reconstructKey: collection5_reconstruct_key,
+  indexes: [],
+  decodedVersion: 0
+}
+
+const collections = [
+  collection0,
+  collection1,
+  collection2,
+  collection3,
+  collection5
+]
+
+const indexes = [
+  index4
+]
 
 module.exports = { versions, collections, indexes, resolveCollection, resolveIndex }
 
-function resolveCollection(name) {
+function resolveCollection (name) {
   switch (name) {
-    case '@gip/repos':
-      return collection0
-    case '@gip/branches':
-      return collection1
-    case '@gip/files':
-      return collection2
-    case '@gip/objects':
-      return collection3
-    default:
-      return null
+    case '@gip/repos': return collection0
+    case '@gip/branches': return collection1
+    case '@gip/files': return collection2
+    case '@gip/objects': return collection3
+    case '@gip/head': return collection5
+    default: return null
   }
 }
 
-function resolveIndex(name) {
+function resolveIndex (name) {
   switch (name) {
-    case '@gip/files-by-branch':
-      return index4
-    default:
-      return null
+    case '@gip/files-by-branch': return index4
+    default: return null
   }
 }

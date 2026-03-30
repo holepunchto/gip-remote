@@ -75,6 +75,16 @@ class Remote extends ReadyResource {
 
   // --- Refs / Branches ---
 
+  async getHead() {
+    const record = await this._db.get('@gip/head', {})
+    return record ? record.branch : null
+  }
+
+  async setHead(branch) {
+    await this._db.insert('@gip/head', { branch })
+    await this._db.flush()
+  }
+
   async getAllRefs() {
     const branches = this._db.find('@gip/branches')
     const refs = []
@@ -83,8 +93,11 @@ class Remote extends ReadyResource {
       refs.push({ ref: `refs/heads/${b.name}`, oid: b.commitOid })
     }
 
-    const main = refs.find((r) => r.ref === 'refs/heads/main')
-    if (main) refs.push({ ref: 'HEAD', oid: main.oid })
+    const headBranch = await this.getHead()
+    if (headBranch) {
+      const head = refs.find((r) => r.ref === `refs/heads/${headBranch}`)
+      if (head) refs.push({ ref: 'HEAD', symref: head.ref, oid: head.oid })
+    }
 
     return refs.reverse()
   }
@@ -162,7 +175,13 @@ class Remote extends ReadyResource {
       objects: [...objects.keys()]
     })
 
-    // 6. Flush
+    // 6. Set HEAD to first branch pushed (like git init)
+    const currentHead = await this.getHead()
+    if (!currentHead) {
+      await this._db.insert('@gip/head', { branch: branchName })
+    }
+
+    // 7. Flush
     await this._db.flush()
   }
 

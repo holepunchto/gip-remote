@@ -50,6 +50,15 @@ const DB_DIR = 'schema/hyperdb'
     ]
   })
 
+  // HEAD: singleton storing the default branch name
+  ns.register({
+    name: 'head',
+    compact: true,
+    fields: [
+      { name: 'branch', type: 'string', required: true } // e.g. 'main'
+    ]
+  })
+
   // Git objects: raw blobs, trees, commits, tags
   ns.register({
     name: 'object-type',
@@ -99,6 +108,12 @@ const DB_DIR = 'schema/hyperdb'
     name: 'objects',
     schema: '@gip/objects',
     key: ['oid']
+  })
+
+  ns.collections.register({
+    name: 'head',
+    schema: '@gip/head',
+    key: []
   })
 
   // List files by path prefix within a branch (directory listing)
