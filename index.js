@@ -23,9 +23,12 @@ class Remote extends ReadyResource {
     if (typeof this._link === 'string') {
       this._name = this._link
       config = {}
-    } else {
+    } else if (this._link.drive) {
       this._name = this._link.pathname?.split('/').slice(1)[0]
-      config = this._link.drive
+      config = { key: this._link.drive.key }
+    } else {
+      this._name = this._link.name
+      config = this._link
     }
 
     const bee = new Hyperbee(store, config, { autoUpdate: true })
