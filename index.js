@@ -31,7 +31,8 @@ class Remote extends ReadyResource {
       config = this._link
     }
 
-    const bee = new Hyperbee(store, config, { autoUpdate: true })
+    config.autoUpdate = true
+    const bee = new Hyperbee(store, config)
     this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
 
     this._timeout = opts.timeout || 240_000
@@ -67,7 +68,8 @@ class Remote extends ReadyResource {
   }
 
   get url() {
-    return `git+pear://${z32.encode(this.key)}/${this.name}`
+    const head = this._db.db.head()
+    return `git+pear://0.${head.length}.${z32.encode(head.key)}/${this.name}`
   }
 
   // --- Objects ---
