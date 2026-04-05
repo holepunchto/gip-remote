@@ -1,13 +1,14 @@
 import { Readable } from 'streamx'
 
 interface RemoteOpts {
-  name?: string
-  store: any
-  swarm: any
-  key?: Buffer
   timeout?: number
-  blind?: boolean
+  blind?: any
 }
+
+type RemoteLink =
+  | string
+  | { name: string; key?: Buffer }
+  | { drive: { key: Buffer }; pathname?: string }
 
 interface GitObject {
   oid: string
@@ -19,6 +20,7 @@ interface GitObject {
 interface Ref {
   ref: string
   oid: string
+  symref?: string
 }
 
 interface RefObject extends GitObject {
@@ -26,13 +28,14 @@ interface RefObject extends GitObject {
 }
 
 declare class Remote {
-  constructor(opts: RemoteOpts)
+  constructor(store: any, link: RemoteLink, opts?: RemoteOpts)
 
   readonly name: string
   readonly core: any
   readonly key: Buffer
   readonly discoveryKey: Buffer
   readonly availablePeers: number
+  readonly url: string
 
   ready(): Promise<void>
   close(): Promise<void>
@@ -42,11 +45,20 @@ declare class Remote {
     commitOid: string,
     objects: Map<string, { type: string; size: number; data: Buffer }>
   ): Promise<void>
+
+  getHead(): Promise<string | null>
+  setHead(branch: string): Promise<void>
+
   getAllRefs(): Promise<Ref[]>
   getBranchRef(branch: string): Promise<Ref | null>
+  deleteBranch(branchName: string): Promise<boolean>
+
   getObject(oid: string): Promise<GitObject | null>
   getRefObjects(commitOid: string, onLoad?: (size: number) => void): Promise<RefObject[]>
+
   toDrive(branch: string): Promise<RemoteDrive | null>
+
+  update(): Promise<void>
   waitForPeers(): Promise<void>
 }
 
@@ -71,6 +83,22 @@ declare class RemoteDrive {
   list(folder: string, opts?: { ignore?: (path: string) => boolean }): Readable
   readdir(folder: string): Readable
   mirror(out: any, opts?: any): any
+}
+
+interface ParsedGitPearLink {
+  protocol: string
+  origin: string
+  pathname?: string
+  drive: {
+    key: Buffer
+    length: number
+    fork?: number | null
+  }
+}
+
+declare const GitPearLink: {
+  parse(link: string): ParsedGitPearLink
+  serialize(o: ParsedGitPearLink): string
 }
 
 interface ToDiskOpts {
@@ -107,4 +135,16 @@ declare function walkTree(
   prefix: string
 ): FileEntry[]
 
-export { Remote, RemoteDrive, toDisk, parseCommit, walkTree }
+export { Remote, RemoteDrive, GitPearLink, toDisk, parseCommit, walkTree }
+export type {
+  RemoteOpts,
+  RemoteLink,
+  GitObject,
+  Ref,
+  RefObject,
+  DriveEntry,
+  ParsedGitPearLink,
+  ToDiskOpts,
+  Commit,
+  FileEntry
+}
