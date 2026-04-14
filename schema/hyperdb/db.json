@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "offset": 0,
   "schema": [
     {
@@ -12,7 +12,9 @@
       "indexes": [],
       "schema": "@gip/repos",
       "derived": false,
-      "key": ["name"],
+      "key": [
+        "name"
+      ],
       "trigger": null
     },
     {
@@ -25,7 +27,9 @@
       "indexes": [],
       "schema": "@gip/branches",
       "derived": false,
-      "key": ["name"],
+      "key": [
+        "name"
+      ],
       "trigger": null
     },
     {
@@ -35,10 +39,15 @@
       "type": 1,
       "version": 1,
       "versionField": null,
-      "indexes": ["@gip/files-by-branch"],
+      "indexes": [
+        "@gip/files-by-branch"
+      ],
       "schema": "@gip/files",
       "derived": false,
-      "key": ["branch", "path"],
+      "key": [
+        "branch",
+        "path"
+      ],
       "trigger": null
     },
     {
@@ -51,7 +60,9 @@
       "indexes": [],
       "schema": "@gip/objects",
       "derived": false,
-      "key": ["oid"],
+      "key": [
+        "oid"
+      ],
       "trigger": null
     },
     {
@@ -63,7 +74,9 @@
       "collection": "@gip/files",
       "unique": false,
       "deprecated": false,
-      "key": ["branch"]
+      "key": [
+        "branch"
+      ]
     },
     {
       "name": "head",
@@ -76,6 +89,21 @@
       "schema": "@gip/head",
       "derived": false,
       "key": [],
+      "trigger": null
+    },
+    {
+      "name": "tags",
+      "namespace": "gip",
+      "id": 6,
+      "type": 1,
+      "version": 3,
+      "versionField": null,
+      "indexes": [],
+      "schema": "@gip/tags",
+      "derived": false,
+      "key": [
+        "name"
+      ],
       "trigger": null
     }
   ]

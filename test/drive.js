@@ -153,8 +153,8 @@ test('drive list with subfolder', async (t) => {
   const drive = await pushAndGetDrive(t, 'list-sub')
 
   const paths = []
-  for await (const path of drive.list('/src')) {
-    paths.push(path)
+  for await (const { key } of drive.list('/src')) {
+    paths.push(key)
   }
 
   t.ok(paths.includes('/src/index.js'), 'has src/index.js')
@@ -165,8 +165,8 @@ test('drive list with ignore filter', async (t) => {
   const drive = await pushAndGetDrive(t, 'list-ignore')
 
   const paths = []
-  for await (const path of drive.list('/', { ignore: (p) => p.endsWith('.md') })) {
-    paths.push(path)
+  for await (const { key } of drive.list('/', { ignore: (p) => p.endsWith('.md') })) {
+    paths.push(key)
   }
 
   t.is(paths.filter((p) => p.endsWith('.md')).length, 0, 'md files filtered')
@@ -190,8 +190,8 @@ test('drive list returns all files with expanded tree', async (t) => {
   const drive = await pushAndGetDrive(t, 'list-expanded', makeExpandedObjects())
 
   const paths = []
-  for await (const path of drive.list('/')) {
-    paths.push(path)
+  for await (const { key } of drive.list('/')) {
+    paths.push(key)
   }
 
   t.ok(paths.includes('/README.md'))

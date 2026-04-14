@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "schema": [
     {
       "name": "repos",
@@ -206,6 +206,62 @@
           "required": true,
           "type": "string",
           "version": 2
+        }
+      ]
+    },
+    {
+      "name": "tags",
+      "namespace": "gip",
+      "compact": true,
+      "flagsPosition": 4,
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "oid",
+          "required": true,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "commitOid",
+          "required": true,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "treeOid",
+          "required": true,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "tagger",
+          "required": false,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "message",
+          "required": false,
+          "type": "string",
+          "version": 3
+        },
+        {
+          "name": "timestamp",
+          "required": false,
+          "type": "uint",
+          "version": 3
+        },
+        {
+          "name": "objects",
+          "array": true,
+          "type": "string",
+          "version": 3
         }
       ]
     }

@@ -50,6 +50,22 @@ const DB_DIR = 'schema/hyperdb'
     ]
   })
 
+  // Tags: annotated and lightweight tags
+  ns.register({
+    name: 'tags',
+    compact: true,
+    fields: [
+      { name: 'name', type: 'string', required: true }, // e.g. 'v1.0.0'
+      { name: 'oid', type: 'string', required: true }, // tag object OID (or commit OID for lightweight)
+      { name: 'commitOid', type: 'string', required: true }, // dereferenced commit OID
+      { name: 'treeOid', type: 'string', required: true }, // root tree of the commit
+      { name: 'tagger', type: 'string', required: false }, // tag author
+      { name: 'message', type: 'string', required: false }, // tag message
+      { name: 'timestamp', type: 'uint', required: false }, // tag timestamp
+      { name: 'objects', type: 'string', array: true } // all OIDs for rebuild
+    ]
+  })
+
   // HEAD: singleton storing the default branch name
   ns.register({
     name: 'head',
@@ -108,6 +124,12 @@ const DB_DIR = 'schema/hyperdb'
     name: 'objects',
     schema: '@gip/objects',
     key: ['oid']
+  })
+
+  ns.collections.register({
+    name: 'tags',
+    schema: '@gip/tags',
+    key: ['name']
   })
 
   ns.collections.register({

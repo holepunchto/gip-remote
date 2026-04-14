@@ -47,6 +47,7 @@ const OID_BLOB2 = 'bb'.repeat(20)
 const OID_TREE_SRC = 'cc'.repeat(20)
 const OID_TREE_ROOT = 'dd'.repeat(20)
 const OID_COMMIT = 'ee'.repeat(20)
+const OID_TAG = 'ff'.repeat(20)
 
 function makeTreeData(entries) {
   const bufs = []
@@ -87,13 +88,32 @@ function makeTestObjects() {
   return objects
 }
 
+function makeTagObjects() {
+  const objects = makeTestObjects()
+
+  const tagText = [
+    `object ${OID_COMMIT}`,
+    'type commit',
+    'tag v1.0.0',
+    'tagger Test User <test@test.com> 1700000000 +0000',
+    '',
+    'Release v1.0.0'
+  ].join('\n')
+  const tagData = Buffer.from(tagText)
+  objects.set(OID_TAG, { type: 'tag', size: tagData.length, data: tagData })
+
+  return objects
+}
+
 module.exports = {
   createStore,
   createRemote,
   makeTestObjects,
+  makeTagObjects,
   OID_BLOB1,
   OID_BLOB2,
   OID_COMMIT,
+  OID_TAG,
   OID_TREE_ROOT,
   OID_TREE_SRC
 }

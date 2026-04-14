@@ -5,7 +5,7 @@ const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
-const { parseCommit, walkTree } = require('./lib/git')
+const { parseCommit, parseTag, walkTree } = require('./lib/git')
 
 class Remote extends ReadyResource {
   _swarm = null
@@ -22,7 +22,7 @@ class Remote extends ReadyResource {
     let config
     if (typeof this._link === 'string') {
       this._name = this._link
-      config = {}
+      config = { core: store.get({ name: this._link }) }
     } else if (this._link.drive) {
       this._name = this._link.pathname?.split('/').slice(1)[0]
       config = { key: this._link.drive.key }
@@ -91,11 +91,16 @@ class Remote extends ReadyResource {
   }
 
   async getAllRefs() {
-    const branches = this._db.find('@gip/branches')
     const refs = []
 
+    const branches = this._db.find('@gip/branches')
     for await (const b of branches) {
       refs.push({ ref: `refs/heads/${b.name}`, oid: b.commitOid })
+    }
+
+    const tags = this._db.find('@gip/tags')
+    for await (const t of tags) {
+      refs.push({ ref: `refs/tags/${t.name}`, oid: t.oid })
     }
 
     const headBranch = await this.getHead()
@@ -129,28 +134,58 @@ class Remote extends ReadyResource {
     return true
   }
 
-  // --- Push: store objects + index branch + files ---
+  async deleteTag(tagName) {
+    const tag = await this._db.get('@gip/tags', { name: tagName })
+    if (!tag) return false
 
-  async push(branchName, commitOid, objects) {
+    await this._db.delete('@gip/tags', { name: tagName })
+
+    // Remove file records for this tag
+    const filesBranch = 'tags/' + tagName
+    const files = this._db.find('@gip/files', { branch: filesBranch })
+    for await (const file of files) {
+      await this._db.delete('@gip/files', { branch: filesBranch, path: file.path })
+    }
+
+    await this._db.flush()
+    return true
+  }
+
+  // --- Push: store objects + index branch/tag + files ---
+
+  async push(refName, oid, objects) {
     // 1. Store all git objects
-    for (const [oid, obj] of objects) {
-      const existing = await this.getObject(oid)
+    for (const [objOid, obj] of objects) {
+      const existing = await this.getObject(objOid)
       if (existing) continue
 
       await this._db.insert('@gip/objects', {
-        oid,
+        oid: objOid,
         type: obj.type,
         size: obj.size,
         data: obj.data
       })
     }
 
-    // 2. Parse commit metadata
-    const commitObj = objects.get(commitOid)
-    if (!commitObj) throw new Error('Commit object not found: ' + commitOid)
+    // 2. Dereference tag objects to find the commit
+    let resolvedOid = oid
+    let obj = objects.get(resolvedOid)
+    if (!obj) throw new Error('Object not found: ' + resolvedOid)
 
-    const commit = parseCommit(commitObj.data)
-    if (!commit.tree) throw new Error('Commit has no tree: ' + commitOid)
+    let tagMeta = null
+    while (obj.type === 'tag') {
+      const tag = parseTag(obj.data)
+      if (!tagMeta) tagMeta = tag
+      if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
+      resolvedOid = tag.object
+      obj = objects.get(resolvedOid)
+      if (!obj) throw new Error('Object not found: ' + resolvedOid)
+    }
+
+    if (obj.type !== 'commit') throw new Error('Expected commit, got ' + obj.type + ': ' + resolvedOid)
+
+    const commit = parseCommit(obj.data)
+    if (!commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
 
     // 3. Walk tree to enumerate files
     const files = walkTree(objects, commit.tree, '')
@@ -158,7 +193,7 @@ class Remote extends ReadyResource {
     // 4. Insert file records
     for (const file of files) {
       await this._db.insert('@gip/files', {
-        branch: branchName,
+        branch: refName,
         path: file.path,
         oid: file.oid,
         mode: file.mode,
@@ -169,21 +204,38 @@ class Remote extends ReadyResource {
       })
     }
 
-    // 5. Insert branch record
-    await this._db.insert('@gip/branches', {
-      name: branchName,
-      commitOid,
-      treeOid: commit.tree,
-      author: commit.author,
-      message: commit.message,
-      timestamp: commit.timestamp,
-      objects: [...objects.keys()]
-    })
+    const isTag = refName.startsWith('tags/')
 
-    // 6. Set HEAD to first branch pushed (like git init)
-    const currentHead = await this.getHead()
-    if (!currentHead) {
-      await this._db.insert('@gip/head', { branch: branchName })
+    if (isTag) {
+      // 5a. Insert tag record
+      const tagName = refName.slice(5) // strip 'tags/'
+      await this._db.insert('@gip/tags', {
+        name: tagName,
+        oid,
+        commitOid: resolvedOid,
+        treeOid: commit.tree,
+        tagger: tagMeta ? tagMeta.tagger : null,
+        message: tagMeta ? tagMeta.message : null,
+        timestamp: tagMeta ? tagMeta.timestamp : 0,
+        objects: [...objects.keys()]
+      })
+    } else {
+      // 5b. Insert branch record
+      await this._db.insert('@gip/branches', {
+        name: refName,
+        commitOid: oid,
+        treeOid: commit.tree,
+        author: commit.author,
+        message: commit.message,
+        timestamp: commit.timestamp,
+        objects: [...objects.keys()]
+      })
+
+      // 6. Set HEAD to first branch pushed (like git init)
+      const currentHead = await this.getHead()
+      if (!currentHead) {
+        await this._db.insert('@gip/head', { branch: refName })
+      }
     }
 
     // 7. Flush
@@ -192,29 +244,41 @@ class Remote extends ReadyResource {
 
   // --- Fetch support ---
 
-  async getRefObjects(commitOid, onLoad) {
-    const branches = this._db.find('@gip/branches')
-    let branch = null
+  async getRefObjects(oid, onLoad) {
+    let record = null
 
+    // Check branches first
+    const branches = this._db.find('@gip/branches')
     for await (const b of branches) {
-      if (b.commitOid === commitOid) {
-        branch = b
+      if (b.commitOid === oid) {
+        record = b
         break
       }
     }
 
-    if (!branch) return []
+    // Then check tags
+    if (!record) {
+      const tags = this._db.find('@gip/tags')
+      for await (const t of tags) {
+        if (t.oid === oid) {
+          record = t
+          break
+        }
+      }
+    }
+
+    if (!record) return []
 
     const results = []
-    for (const oid of branch.objects) {
-      const obj = await this.getObject(oid)
+    for (const objOid of record.objects) {
+      const obj = await this.getObject(objOid)
       if (!obj) continue
 
       // Empty blobs have null data after round-tripping through compact-encoding
       const data = obj.data || Buffer.alloc(0)
 
       if (onLoad) onLoad(obj.size)
-      results.push({ ...obj, data, id: oid })
+      results.push({ ...obj, data, id: objOid })
     }
 
     return results
@@ -223,8 +287,16 @@ class Remote extends ReadyResource {
   // --- Drive ---
 
   async toDrive(branch) {
+    // Check branches first, then tags
     const b = await this._db.get('@gip/branches', { name: branch })
-    if (!b) return null
+    if (!b) {
+      const t = await this._db.get('@gip/tags', { name: branch })
+      if (!t) return null
+      // For tags, files are stored under 'tags/<name>'
+      const drive = new RemoteDrive(this._db, { branch: 'tags/' + branch })
+      await drive.ready()
+      return drive
+    }
 
     const drive = new RemoteDrive(this._db, { branch })
     await drive.ready()
