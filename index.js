@@ -241,7 +241,21 @@ class Remote extends ReadyResource {
         objects: [...objects.keys()]
       })
     } else {
-      // 5b. Insert branch record
+      // 5b. Insert/update branch record.
+      //
+      // `objects` is the denormalized "everything reachable from this branch"
+      // set used by getRefObjects() at fetch time. CRITICAL: we must MERGE
+      // with the prior record's objects, not overwrite. A real git client
+      // sends a thin pack on follow-up pushes (only the new objects), so
+      // `objects.keys()` here would be e.g. just {commit B, new tree} —
+      // commit A and its tree from the previous push would be dropped from
+      // the list, and a fresh clone calling getRefObjects(headOfB) would be
+      // missing every parent commit. That's the "I cloned and lost a
+      // commit" symptom.
+      const prev = await this._db.get('@gip/branches', { name: refName })
+      const merged = new Set(prev ? prev.objects : [])
+      for (const k of objects.keys()) merged.add(k)
+
       await this._db.insert('@gip/branches', {
         name: refName,
         commitOid: oid,
@@ -249,7 +263,7 @@ class Remote extends ReadyResource {
         author: commit.author,
         message: commit.message,
         timestamp: commit.timestamp,
-        objects: [...objects.keys()]
+        objects: [...merged]
       })
 
       // 6. Set HEAD to first branch pushed (like git init)
