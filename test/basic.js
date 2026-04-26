@@ -193,6 +193,58 @@ test('push is idempotent for objects', async (t) => {
   t.is(blob.data.toString(), 'hello world')
 })
 
+test('push removes file index entries for paths deleted in the new tree', async (t) => {
+  // Regression test: prior behaviour left @gip/files entries for paths that
+  // were deleted in a later commit. Drive views and file iterators would
+  // surface ghost files until the branch was deleted entirely.
+  const remote = await createRemote(t, { name: 'delete-file' })
+
+  // First push: README.md + src/index.js (the standard fixture)
+  const initial = makeTestObjects()
+  await remote.push('main', OID_COMMIT, initial)
+
+  // Sanity — both files indexed.
+  let drive = await remote.toDrive('main')
+  let paths = []
+  for await (const { key } of drive.list('/')) paths.push(key)
+  t.ok(paths.includes('/README.md'), 'README.md in initial index')
+  t.ok(paths.includes('/src/index.js'), 'src/index.js in initial index')
+  t.is(paths.length, 2, 'two files initially')
+
+  // Second push: a new tree containing only README.md (src/ removed).
+  const NEW_TREE = '11'.repeat(20)
+  const NEW_COMMIT = '22'.repeat(20)
+
+  // Tree with just README.md → blob1
+  const treeData = Buffer.concat([Buffer.from('100644 README.md\0'), Buffer.from(OID_BLOB1, 'hex')])
+  const commitText = [
+    `tree ${NEW_TREE}`,
+    `parent ${OID_COMMIT}`,
+    'author Test User <test@test.com> 1700000100 +0000',
+    'committer Test User <test@test.com> 1700000100 +0000',
+    '',
+    'remove src/'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+
+  const next = new Map()
+  next.set(OID_BLOB1, initial.get(OID_BLOB1)) // unchanged blob
+  next.set(NEW_TREE, { type: 'tree', size: treeData.length, data: treeData })
+  next.set(NEW_COMMIT, { type: 'commit', size: commitData.length, data: commitData })
+
+  await remote.push('main', NEW_COMMIT, next)
+
+  // After the rewrite, the drive should reflect only the surviving file —
+  // src/index.js must be gone from the index.
+  drive = await remote.toDrive('main')
+  paths = []
+  for await (const { key } of drive.list('/')) paths.push(key)
+
+  t.ok(paths.includes('/README.md'), 'README.md still indexed')
+  t.absent(paths.includes('/src/index.js'), 'deleted file is gone from index')
+  t.is(paths.length, 1, 'exactly one file after deletion')
+})
+
 // --- deleteBranch ---
 
 test('deleteBranch removes branch and files', async (t) => {
@@ -363,13 +415,19 @@ test('deleteTag removes tag and files', async (t) => {
   await remote.push('tags/v1.0.0', OID_TAG, objects)
 
   const before = await remote.getAllRefs()
-  t.ok(before.find((r) => r.ref === 'refs/tags/v1.0.0'), 'tag exists before delete')
+  t.ok(
+    before.find((r) => r.ref === 'refs/tags/v1.0.0'),
+    'tag exists before delete'
+  )
 
   const deleted = await remote.deleteTag('v1.0.0')
   t.is(deleted, true)
 
   const after = await remote.getAllRefs()
-  t.absent(after.find((r) => r.ref === 'refs/tags/v1.0.0'), 'tag gone after delete')
+  t.absent(
+    after.find((r) => r.ref === 'refs/tags/v1.0.0'),
+    'tag gone after delete'
+  )
 
   const drive = await remote.toDrive('v1.0.0')
   t.is(drive, null, 'drive returns null after delete')

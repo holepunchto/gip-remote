@@ -182,7 +182,9 @@ class Remote extends ReadyResource {
       if (!obj) throw new Error('Object not found: ' + resolvedOid)
     }
 
-    if (obj.type !== 'commit') throw new Error('Expected commit, got ' + obj.type + ': ' + resolvedOid)
+    if (obj.type !== 'commit') {
+      throw new Error('Expected commit, got ' + obj.type + ': ' + resolvedOid)
+    }
 
     const commit = parseCommit(obj.data)
     if (!commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
@@ -190,7 +192,26 @@ class Remote extends ReadyResource {
     // 3. Walk tree to enumerate files
     const files = walkTree(objects, commit.tree, '')
 
-    // 4. Insert file records
+    // 4a. Reconcile deletions — remove file records whose paths no longer
+    //     exist in the new tree. Without this, files removed in a commit
+    //     would persist in the index forever (only `deleteBranch` cleans
+    //     them up, and only on full branch deletion). The drive view would
+    //     keep showing ghost files; consumers iterating @gip/files would
+    //     emit stale entries.
+    //
+    //     We rebuild the new path set first, then sweep the existing
+    //     records — O(N) in the size of the indexed tree, same order as
+    //     the insert step that follows.
+    const newPaths = new Set(files.map((f) => f.path))
+    const existingFiles = this._db.find('@gip/files', { branch: refName })
+    for await (const file of existingFiles) {
+      if (!newPaths.has(file.path)) {
+        await this._db.delete('@gip/files', { branch: refName, path: file.path })
+      }
+    }
+
+    // 4b. Insert file records (idempotent w.r.t. (branch, path) — acts as
+    //     upsert for paths whose blob/mode/metadata changed).
     for (const file of files) {
       await this._db.insert('@gip/files', {
         branch: refName,

@@ -151,10 +151,10 @@ const encoding3_enum = {
 
 // @gip/object-type enum
 const encoding3 = {
-  preencode (state, m) {
+  preencode(state, m) {
     state.end++ // max enum is 4 so always one byte
   },
-  encode (state, m) {
+  encode(state, m) {
     switch (m) {
       case 'blob':
         c.uint.encode(state, 1)
@@ -172,7 +172,7 @@ const encoding3 = {
         throw new Error('Unknown enum')
     }
   },
-  decode (state) {
+  decode(state) {
     switch (c.uint.decode(state)) {
       case 1:
         return 'blob'
@@ -182,7 +182,8 @@ const encoding3 = {
         return 'commit'
       case 4:
         return 'tag'
-      default: return null
+      default:
+        return null
     }
   }
 }
@@ -252,10 +253,10 @@ const encoding6 = {
   },
   encode(state, m) {
     const flags =
-      ((version >= 3 && m.tagger) ? 1 : 0) |
-      ((version >= 3 && m.message) ? 2 : 0) |
-      ((version >= 3 && m.timestamp) ? 4 : 0) |
-      ((version >= 3 && m.objects) ? 8 : 0)
+      (version >= 3 && m.tagger ? 1 : 0) |
+      (version >= 3 && m.message ? 2 : 0) |
+      (version >= 3 && m.timestamp ? 4 : 0) |
+      (version >= 3 && m.objects ? 8 : 0)
 
     c.string.encode(state, m.name)
     c.string.encode(state, m.oid)
@@ -280,10 +281,10 @@ const encoding6 = {
       oid: r1,
       commitOid: r2,
       treeOid: r3,
-      tagger: (version >= 3 && (flags & 1) !== 0) ? c.string.decode(state) : null,
-      message: (version >= 3 && (flags & 2) !== 0) ? c.string.decode(state) : null,
-      timestamp: (version >= 3 && (flags & 4) !== 0) ? c.uint.decode(state) : 0,
-      objects: (version >= 3 && (flags & 8) !== 0) ? encoding6_7.decode(state) : null
+      tagger: version >= 3 && (flags & 1) !== 0 ? c.string.decode(state) : null,
+      message: version >= 3 && (flags & 2) !== 0 ? c.string.decode(state) : null,
+      timestamp: version >= 3 && (flags & 4) !== 0 ? c.uint.decode(state) : 0,
+      objects: version >= 3 && (flags & 8) !== 0 ? encoding6_7.decode(state) : null
     }
   }
 }
@@ -451,10 +452,10 @@ const encoding11 = {
   },
   encode(state, m) {
     const flags =
-      ((version >= 3 && m.tagger) ? 1 : 0) |
-      ((version >= 3 && m.message) ? 2 : 0) |
-      ((version >= 3 && m.timestamp) ? 4 : 0) |
-      ((version >= 3 && m.objects) ? 8 : 0)
+      (version >= 3 && m.tagger ? 1 : 0) |
+      (version >= 3 && m.message ? 2 : 0) |
+      (version >= 3 && m.timestamp ? 4 : 0) |
+      (version >= 3 && m.objects ? 8 : 0)
 
     c.string.encode(state, m.oid)
     c.string.encode(state, m.commitOid)
@@ -477,10 +478,10 @@ const encoding11 = {
       oid: r1,
       commitOid: r2,
       treeOid: r3,
-      tagger: (version >= 3 && (flags & 1) !== 0) ? c.string.decode(state) : null,
-      message: (version >= 3 && (flags & 2) !== 0) ? c.string.decode(state) : null,
-      timestamp: (version >= 3 && (flags & 4) !== 0) ? c.uint.decode(state) : 0,
-      objects: (version >= 3 && (flags & 8) !== 0) ? encoding11_7.decode(state) : null
+      tagger: version >= 3 && (flags & 1) !== 0 ? c.string.decode(state) : null,
+      message: version >= 3 && (flags & 2) !== 0 ? c.string.decode(state) : null,
+      timestamp: version >= 3 && (flags & 4) !== 0 ? c.uint.decode(state) : 0,
+      objects: version >= 3 && (flags & 8) !== 0 ? encoding11_7.decode(state) : null
     }
   }
 }
