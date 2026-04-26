@@ -210,35 +210,76 @@ class Remote extends ReadyResource {
       }
     }
 
-    // 4b. Insert/update file records — but ONLY for paths whose blob or mode
-    //     actually changed. Earlier versions blindly upserted every file in
-    //     the new tree on every push, which overwrote the commit metadata of
-    //     untouched files with HEAD's author/message/timestamp. The visible
-    //     symptom: a tree view shows every file as "last modified by the
-    //     latest commit", so per-file timestamps become useless.
+    // 4b. Compute, for each file in HEAD's tree, the most recent commit IN
+    //     THIS PUSH that actually changed its blob — that's the commit we
+    //     want to credit on the @gip/files row. If we just stamped every
+    //     file with HEAD's metadata (the previous behaviour), a fresh push
+    //     of a multi-commit history would make every file look like it was
+    //     last edited by HEAD, which is useless for a tree view.
     //
-    //     Skipping unchanged rows preserves the metadata of the commit that
-    //     last *actually* modified the file. New paths and modified paths
-    //     still take the current commit's metadata as before.
+    //     Algorithm: walk the commit chain HEAD → first-parent through the
+    //     commits we have in the pack, flatten each commit's tree into a
+    //     path → oid map, and for each path record the most recent commit
+    //     whose tree differs at that path from its first-parent's tree.
+    //     We don't follow merge parents — same heuristic GitHub's "blame"
+    //     uses; it keeps cost predictable and matches user expectation.
+    //
+    //     Cases the fallback below handles:
+    //       - Pack is shallow and the path was already at HEAD's blob
+    //         before our oldest commit — keep the existing row as-is.
+    //       - First push containing a root commit — files appearing in the
+    //         root take the root commit's metadata.
+    const fileLastTouch = computeFileLastTouch(objects, resolvedOid, commit)
+    const oldestInPack = fileLastTouch.oldest
+
     for (const file of files) {
       const existing = await this._db.get('@gip/files', {
         branch: refName,
         path: file.path
       })
-      if (existing && existing.oid === file.oid && existing.mode === file.mode) {
-        // Same blob, same mode → file is unchanged in this commit. Leave
-        // the existing row untouched so its commit metadata stays accurate.
+
+      let meta = fileLastTouch.byPath.get(file.path)
+
+      if (!meta) {
+        // No commit in our pack changed this file. Either it's been at this
+        // blob since before our window, or the pack is shallow.
+        if (existing && existing.oid === file.oid && existing.mode === file.mode) {
+          // Genuinely unchanged from prior push — leave row alone.
+          continue
+        }
+        // Fall back to the oldest commit we have. Best approximation when a
+        // shallow clone is being seeded (we don't have the real introducing
+        // commit, but the oldest commit in the pack is a strict upper bound
+        // on "when it could have last changed" given what we know).
+        meta = {
+          author: oldestInPack.author,
+          message: oldestInPack.message,
+          timestamp: oldestInPack.timestamp
+        }
+      }
+
+      // Idempotency: if the existing row already reflects the same blob,
+      // mode, and metadata we'd write, skip the insert. Saves a write
+      // round-trip on no-op pushes (e.g. retries).
+      if (
+        existing &&
+        existing.oid === file.oid &&
+        existing.mode === file.mode &&
+        existing.message === meta.message &&
+        existing.timestamp === meta.timestamp
+      ) {
         continue
       }
+
       await this._db.insert('@gip/files', {
         branch: refName,
         path: file.path,
         oid: file.oid,
         mode: file.mode,
         size: file.size,
-        author: commit.author,
-        message: commit.message,
-        timestamp: commit.timestamp
+        author: meta.author,
+        message: meta.message,
+        timestamp: meta.timestamp
       })
     }
 
@@ -379,6 +420,95 @@ class Remote extends ReadyResource {
         }
       }, 500)
     })
+  }
+}
+
+/**
+ * Walk the first-parent commit chain (within `objects`) starting at HEAD,
+ * and for each path in HEAD's tree return the metadata of the most recent
+ * commit whose tree differs at that path from its parent's tree.
+ *
+ * Returns:
+ *   - byPath:  Map<path, { author, message, timestamp }> for paths we
+ *              could attribute within the pack.
+ *   - oldest:  the oldest commit reached (used as a fallback by callers
+ *              when the pack is shallow and a path was already at its
+ *              current blob before the pack window).
+ *
+ * Pure function — does no IO, just inspects the in-memory `objects` map.
+ */
+function computeFileLastTouch(objects, headOid, headCommit) {
+  // 1. Walk the chain through first-parent edges, stopping at the first
+  //    parent we don't have. Stash both the parsed commit and the OID.
+  const chain = []
+  let curOid = headOid
+  let cur = headCommit
+  for (;;) {
+    chain.push({ oid: curOid, commit: cur })
+    if (!cur.parents || cur.parents.length === 0) break
+    const parentOid = cur.parents[0]
+    const parentObj = objects.get(parentOid)
+    if (!parentObj || parentObj.type !== 'commit') break
+    cur = parseCommit(parentObj.data)
+    curOid = parentOid
+  }
+
+  // 2. Flatten each commit's tree into a path → oid map. walkTree handles
+  //    nested trees and skips missing sub-trees gracefully (returns []),
+  //    which is what we want for incremental packs that don't re-send
+  //    unchanged sub-trees.
+  const treeMaps = chain.map(({ commit }) => {
+    const map = new Map()
+    for (const f of walkTree(objects, commit.tree, '')) {
+      map.set(f.path, f.oid)
+    }
+    return map
+  })
+
+  // 3. Walk newest-first; record the change point for each HEAD path.
+  const byPath = new Map()
+  const remaining = new Set(treeMaps[0].keys())
+
+  for (let i = 0; i < chain.length && remaining.size > 0; i++) {
+    const cur = treeMaps[i]
+    const isLast = i === chain.length - 1
+    const par = isLast ? null : treeMaps[i + 1]
+    // True root commit (no parents at all) — files appearing here are new,
+    // so they're attributed to this commit. We must NOT do the same when
+    // we ran out of pack (parents exist, just not in pack), or we'd make
+    // up an attribution that isn't real.
+    const isRoot = isLast && (!chain[i].commit.parents || chain[i].commit.parents.length === 0)
+
+    for (const path of remaining) {
+      const curOidAtPath = cur.get(path)
+      if (curOidAtPath === undefined) continue
+
+      if (par) {
+        const parOidAtPath = par.get(path)
+        if (parOidAtPath !== curOidAtPath) {
+          byPath.set(path, {
+            author: chain[i].commit.author,
+            message: chain[i].commit.message,
+            timestamp: chain[i].commit.timestamp
+          })
+          remaining.delete(path)
+        }
+      } else if (isRoot) {
+        byPath.set(path, {
+          author: chain[i].commit.author,
+          message: chain[i].commit.message,
+          timestamp: chain[i].commit.timestamp
+        })
+        remaining.delete(path)
+      }
+      // else: shallow boundary — caller falls back to existing row /
+      // oldest-commit metadata.
+    }
+  }
+
+  return {
+    byPath,
+    oldest: chain[chain.length - 1].commit
   }
 }
 

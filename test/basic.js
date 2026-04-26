@@ -324,6 +324,126 @@ test('push preserves commit metadata for files unchanged across pushes', async (
   t.is(indexJs.oid, NEW_BLOB, 'src/index.js has new blob')
 })
 
+test('push attributes each file to the commit that actually last touched it', async (t) => {
+  // Regression test: prior behaviour stamped every file in HEAD's tree with
+  // HEAD's commit metadata, so a fresh push of a multi-commit history made
+  // every file look like it was last edited by the most recent commit.
+  // We must walk the supplied commit chain and credit each file to the
+  // most recent commit whose tree actually changed its blob.
+  const remote = await createRemote(t, { name: 'multi-commit-attribution' })
+
+  // Fixture: three commits in one push.
+  //   C1 (root)     : adds /README.md  + /src/a.js
+  //   C2 (parent C1): modifies /src/a.js
+  //   C3 (parent C2): adds /src/b.js   (README.md and a.js unchanged)
+  //
+  // Expected after push of C3 with all three in `objects`:
+  //   /README.md  -> C1 (added in root, never changed)
+  //   /src/a.js   -> C2 (last changed in C2)
+  //   /src/b.js   -> C3 (added in C3)
+  const BLOB_README = 'a1'.repeat(20)
+  const BLOB_A_V1 = 'a2'.repeat(20)
+  const BLOB_A_V2 = 'a3'.repeat(20)
+  const BLOB_B = 'a4'.repeat(20)
+
+  const TREE_SRC_C1 = 'b1'.repeat(20)
+  const TREE_ROOT_C1 = 'b2'.repeat(20)
+  const TREE_SRC_C2 = 'b3'.repeat(20)
+  const TREE_ROOT_C2 = 'b4'.repeat(20)
+  const TREE_SRC_C3 = 'b5'.repeat(20)
+  const TREE_ROOT_C3 = 'b6'.repeat(20)
+
+  const C1 = 'c1'.repeat(20)
+  const C2 = 'c2'.repeat(20)
+  const C3 = 'c3'.repeat(20)
+
+  const objects = new Map()
+
+  // Blobs
+  const readmeData = Buffer.from('hello')
+  const aV1Data = Buffer.from('a v1')
+  const aV2Data = Buffer.from('a v2 (longer)')
+  const bData = Buffer.from('b new')
+  objects.set(BLOB_README, { type: 'blob', size: readmeData.length, data: readmeData })
+  objects.set(BLOB_A_V1, { type: 'blob', size: aV1Data.length, data: aV1Data })
+  objects.set(BLOB_A_V2, { type: 'blob', size: aV2Data.length, data: aV2Data })
+  objects.set(BLOB_B, { type: 'blob', size: bData.length, data: bData })
+
+  // Trees — C1 has src{a.js v1}, C2 has src{a.js v2}, C3 has src{a.js v2, b.js}
+  const treeSrcC1 = Buffer.concat([
+    Buffer.from('100644 a.js\0'),
+    Buffer.from(BLOB_A_V1, 'hex')
+  ])
+  objects.set(TREE_SRC_C1, { type: 'tree', size: treeSrcC1.length, data: treeSrcC1 })
+
+  const treeSrcC2 = Buffer.concat([
+    Buffer.from('100644 a.js\0'),
+    Buffer.from(BLOB_A_V2, 'hex')
+  ])
+  objects.set(TREE_SRC_C2, { type: 'tree', size: treeSrcC2.length, data: treeSrcC2 })
+
+  // src tree entries must be name-sorted (a.js before b.js)
+  const treeSrcC3 = Buffer.concat([
+    Buffer.from('100644 a.js\0'),
+    Buffer.from(BLOB_A_V2, 'hex'),
+    Buffer.from('100644 b.js\0'),
+    Buffer.from(BLOB_B, 'hex')
+  ])
+  objects.set(TREE_SRC_C3, { type: 'tree', size: treeSrcC3.length, data: treeSrcC3 })
+
+  // Root trees: README.md before src (R < s in ASCII)
+  function makeRoot(srcOid) {
+    return Buffer.concat([
+      Buffer.from('100644 README.md\0'),
+      Buffer.from(BLOB_README, 'hex'),
+      Buffer.from('40000 src\0'),
+      Buffer.from(srcOid, 'hex')
+    ])
+  }
+  const rootC1 = makeRoot(TREE_SRC_C1)
+  const rootC2 = makeRoot(TREE_SRC_C2)
+  const rootC3 = makeRoot(TREE_SRC_C3)
+  objects.set(TREE_ROOT_C1, { type: 'tree', size: rootC1.length, data: rootC1 })
+  objects.set(TREE_ROOT_C2, { type: 'tree', size: rootC2.length, data: rootC2 })
+  objects.set(TREE_ROOT_C3, { type: 'tree', size: rootC3.length, data: rootC3 })
+
+  // Commits: C1 (root), C2 child of C1, C3 child of C2
+  function makeCommit(treeOid, parentOid, message, ts) {
+    const lines = [`tree ${treeOid}`]
+    if (parentOid) lines.push(`parent ${parentOid}`)
+    lines.push(
+      `author Test User <test@test.com> ${ts} +0000`,
+      `committer Test User <test@test.com> ${ts} +0000`,
+      '',
+      message
+    )
+    return Buffer.from(lines.join('\n'))
+  }
+  const c1Data = makeCommit(TREE_ROOT_C1, null, 'add README and a.js', 1700000000)
+  const c2Data = makeCommit(TREE_ROOT_C2, C1, 'update a.js', 1700000100)
+  const c3Data = makeCommit(TREE_ROOT_C3, C2, 'add b.js', 1700000200)
+  objects.set(C1, { type: 'commit', size: c1Data.length, data: c1Data })
+  objects.set(C2, { type: 'commit', size: c2Data.length, data: c2Data })
+  objects.set(C3, { type: 'commit', size: c3Data.length, data: c3Data })
+
+  await remote.push('main', C3, objects)
+
+  const readme = await remote._db.get('@gip/files', { branch: 'main', path: '/README.md' })
+  t.ok(readme, 'README.md indexed')
+  t.is(readme.message, 'add README and a.js', 'README.md credited to root commit')
+  t.is(readme.timestamp, 1700000000, 'README.md timestamp = root commit')
+
+  const aJs = await remote._db.get('@gip/files', { branch: 'main', path: '/src/a.js' })
+  t.ok(aJs, 'src/a.js indexed')
+  t.is(aJs.message, 'update a.js', 'src/a.js credited to its modifying commit')
+  t.is(aJs.timestamp, 1700000100, 'src/a.js timestamp = C2')
+
+  const bJs = await remote._db.get('@gip/files', { branch: 'main', path: '/src/b.js' })
+  t.ok(bJs, 'src/b.js indexed')
+  t.is(bJs.message, 'add b.js', 'src/b.js credited to the commit that added it')
+  t.is(bJs.timestamp, 1700000200, 'src/b.js timestamp = C3')
+})
+
 test('push of identical tree leaves all file metadata untouched', async (t) => {
   // Pushing the same tree twice (which happens whenever a client retries a
   // push, or when a remote is re-synced) must be a no-op for @gip/files.
