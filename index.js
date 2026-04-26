@@ -210,9 +210,26 @@ class Remote extends ReadyResource {
       }
     }
 
-    // 4b. Insert file records (idempotent w.r.t. (branch, path) — acts as
-    //     upsert for paths whose blob/mode/metadata changed).
+    // 4b. Insert/update file records — but ONLY for paths whose blob or mode
+    //     actually changed. Earlier versions blindly upserted every file in
+    //     the new tree on every push, which overwrote the commit metadata of
+    //     untouched files with HEAD's author/message/timestamp. The visible
+    //     symptom: a tree view shows every file as "last modified by the
+    //     latest commit", so per-file timestamps become useless.
+    //
+    //     Skipping unchanged rows preserves the metadata of the commit that
+    //     last *actually* modified the file. New paths and modified paths
+    //     still take the current commit's metadata as before.
     for (const file of files) {
+      const existing = await this._db.get('@gip/files', {
+        branch: refName,
+        path: file.path
+      })
+      if (existing && existing.oid === file.oid && existing.mode === file.mode) {
+        // Same blob, same mode → file is unchanged in this commit. Leave
+        // the existing row untouched so its commit metadata stays accurate.
+        continue
+      }
       await this._db.insert('@gip/files', {
         branch: refName,
         path: file.path,

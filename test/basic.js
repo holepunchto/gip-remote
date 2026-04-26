@@ -245,6 +245,126 @@ test('push removes file index entries for paths deleted in the new tree', async 
   t.is(paths.length, 1, 'exactly one file after deletion')
 })
 
+test('push preserves commit metadata for files unchanged across pushes', async (t) => {
+  // Regression test: prior behaviour upserted every file row on every push,
+  // overwriting the commit metadata of unchanged files with the latest
+  // commit's author/message/timestamp. Visible to consumers as "every file
+  // looks like it was last touched by HEAD" — useless for a tree view.
+  const remote = await createRemote(t, { name: 'unchanged-meta' })
+
+  // First push: README.md + src/index.js, committed at t=1700000000.
+  const initial = makeTestObjects()
+  await remote.push('main', OID_COMMIT, initial)
+
+  // Capture the metadata recorded for README.md after the first push.
+  const before = await remote._db.get('@gip/files', {
+    branch: 'main',
+    path: '/README.md'
+  })
+  t.ok(before, 'README.md indexed')
+  t.is(before.message, 'initial commit')
+  t.is(before.timestamp, 1700000000)
+
+  // Second push: same README.md (same blob OID), but src/index.js gets a
+  // new blob, with a later commit timestamp + different message.
+  const NEW_BLOB = '11'.repeat(20)
+  const NEW_TREE_SRC = '22'.repeat(20)
+  const NEW_TREE_ROOT = '33'.repeat(20)
+  const NEW_COMMIT = '44'.repeat(20)
+
+  const newBlobData = Buffer.from('console.log("updated")')
+  const srcTreeData = Buffer.concat([
+    Buffer.from('100644 index.js\0'),
+    Buffer.from(NEW_BLOB, 'hex')
+  ])
+  const rootTreeData = Buffer.concat([
+    Buffer.from('100644 README.md\0'),
+    Buffer.from(OID_BLOB1, 'hex'), // <-- same blob, unchanged
+    Buffer.from('40000 src\0'),
+    Buffer.from(NEW_TREE_SRC, 'hex')
+  ])
+  const commitText = [
+    `tree ${NEW_TREE_ROOT}`,
+    `parent ${OID_COMMIT}`,
+    'author Test User <test@test.com> 1700000500 +0000',
+    'committer Test User <test@test.com> 1700000500 +0000',
+    '',
+    'update src/index.js'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+
+  const next = new Map()
+  next.set(OID_BLOB1, initial.get(OID_BLOB1)) // unchanged
+  next.set(NEW_BLOB, { type: 'blob', size: newBlobData.length, data: newBlobData })
+  next.set(NEW_TREE_SRC, { type: 'tree', size: srcTreeData.length, data: srcTreeData })
+  next.set(NEW_TREE_ROOT, { type: 'tree', size: rootTreeData.length, data: rootTreeData })
+  next.set(NEW_COMMIT, { type: 'commit', size: commitData.length, data: commitData })
+
+  await remote.push('main', NEW_COMMIT, next)
+
+  // README.md row must keep the FIRST commit's metadata — its blob never
+  // changed, so the "last commit that touched it" is still the initial.
+  const readme = await remote._db.get('@gip/files', {
+    branch: 'main',
+    path: '/README.md'
+  })
+  t.ok(readme, 'README.md still indexed')
+  t.is(readme.message, 'initial commit', 'README.md keeps original commit message')
+  t.is(readme.timestamp, 1700000000, 'README.md keeps original commit timestamp')
+  t.is(readme.oid, OID_BLOB1, 'README.md blob unchanged')
+
+  // src/index.js row should reflect the SECOND commit — its blob did change.
+  const indexJs = await remote._db.get('@gip/files', {
+    branch: 'main',
+    path: '/src/index.js'
+  })
+  t.ok(indexJs, 'src/index.js still indexed')
+  t.is(indexJs.message, 'update src/index.js', 'src/index.js gets new commit message')
+  t.is(indexJs.timestamp, 1700000500, 'src/index.js gets new commit timestamp')
+  t.is(indexJs.oid, NEW_BLOB, 'src/index.js has new blob')
+})
+
+test('push of identical tree leaves all file metadata untouched', async (t) => {
+  // Pushing the same tree twice (which happens whenever a client retries a
+  // push, or when a remote is re-synced) must be a no-op for @gip/files.
+  // Otherwise the second push would steal "last touched" credit from
+  // whatever historical commit actually wrote each file.
+  const remote = await createRemote(t, { name: 'identical-push' })
+
+  const objects = makeTestObjects()
+  await remote.push('main', OID_COMMIT, objects)
+
+  const initialReadme = await remote._db.get('@gip/files', {
+    branch: 'main',
+    path: '/README.md'
+  })
+
+  // Forge a "newer" commit pointing at the SAME tree, to verify metadata is
+  // not refreshed even when the inbound commit is strictly newer.
+  const NEW_COMMIT = '55'.repeat(20)
+  const commitText = [
+    `tree ${OID_TREE_ROOT}`,
+    `parent ${OID_COMMIT}`,
+    'author Test User <test@test.com> 1800000000 +0000',
+    'committer Test User <test@test.com> 1800000000 +0000',
+    '',
+    'no-op commit'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+
+  const next = new Map(objects)
+  next.set(NEW_COMMIT, { type: 'commit', size: commitData.length, data: commitData })
+
+  await remote.push('main', NEW_COMMIT, next)
+
+  const after = await remote._db.get('@gip/files', {
+    branch: 'main',
+    path: '/README.md'
+  })
+  t.is(after.message, initialReadme.message, 'message preserved')
+  t.is(after.timestamp, initialReadme.timestamp, 'timestamp preserved')
+})
+
 // --- deleteBranch ---
 
 test('deleteBranch removes branch and files', async (t) => {
