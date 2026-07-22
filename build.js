@@ -93,6 +93,20 @@ const DB_DIR = 'schema/hyperdb'
     ]
   })
 
+  // Overflow storage for objects larger than the max hypercore block size.
+  // Such objects are stored with an empty `data` in @gip/objects (the true
+  // length is still in `size`) and their payload is split across these rows,
+  // ordered by `index`. Reassembled on read; inline objects never touch this.
+  ns.register({
+    name: 'object-chunks',
+    compact: true,
+    fields: [
+      { name: 'oid', type: 'string', required: true },
+      { name: 'index', type: 'uint', required: true },
+      { name: 'data', type: 'buffer', required: true }
+    ]
+  })
+
   Hyperschema.toDisk(schema)
 }
 
@@ -124,6 +138,12 @@ const DB_DIR = 'schema/hyperdb'
     name: 'objects',
     schema: '@gip/objects',
     key: ['oid']
+  })
+
+  ns.collections.register({
+    name: 'object-chunks',
+    schema: '@gip/object-chunks',
+    key: ['oid', 'index']
   })
 
   ns.collections.register({

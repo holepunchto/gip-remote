@@ -6,9 +6,7 @@ interface RemoteOpts {
 }
 
 type RemoteLink =
-  | string
-  | { name: string; key?: Buffer }
-  | { drive: { key: Buffer }; pathname?: string }
+  string | { name: string; key?: Buffer } | { drive: { key: Buffer }; pathname?: string }
 
 interface GitObject {
   oid: string

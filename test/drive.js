@@ -83,6 +83,34 @@ function makeExpandedObjects() {
   return objects
 }
 
+const OID_OTHER_BLOB = '01'.repeat(20)
+const OID_OTHER_TREE = '02'.repeat(20)
+const OID_OTHER_COMMIT = '03'.repeat(20)
+
+// A second branch whose single file lives at a path no other branch uses, so
+// cross-branch leakage is unambiguous.
+function makeOtherObjects() {
+  const objects = new Map()
+
+  const blob = Buffer.from('only in other')
+  objects.set(OID_OTHER_BLOB, { type: 'blob', size: blob.length, data: blob })
+
+  const tree = makeTreeData([{ mode: '100644', name: 'only-other.txt', oid: OID_OTHER_BLOB }])
+  objects.set(OID_OTHER_TREE, { type: 'tree', size: tree.length, data: tree })
+
+  const commitText = [
+    `tree ${OID_OTHER_TREE}`,
+    'author Test User <test@test.com> 1700000000 +0000',
+    'committer Test User <test@test.com> 1700000000 +0000',
+    '',
+    'other branch'
+  ].join('\n')
+  const commitData = Buffer.from(commitText)
+  objects.set(OID_OTHER_COMMIT, { type: 'commit', size: commitData.length, data: commitData })
+
+  return objects
+}
+
 async function pushAndGetDrive(t, name, objects) {
   const remote = await createRemote(t, { name })
   objects = objects || makeTestObjects()
@@ -198,4 +226,36 @@ test('drive list returns all files with expanded tree', async (t) => {
   t.ok(paths.includes('/src/index.js'))
   t.ok(paths.includes('/src/run.sh'))
   t.is(paths.length, 3)
+})
+
+test('drive list only returns files from its own branch', async (t) => {
+  const remote = await createRemote(t, { name: 'multi-branch-list' })
+  await remote.push('main', OID_COMMIT, makeTestObjects())
+  await remote.push('other', OID_OTHER_COMMIT, makeOtherObjects())
+
+  const mainDrive = await remote.toDrive('main')
+  const mainPaths = []
+  for await (const { key } of mainDrive.list('/')) mainPaths.push(key)
+  t.ok(mainPaths.includes('/README.md'), 'main has its own file')
+  t.absent(mainPaths.includes('/only-other.txt'), 'main does not leak the other branch')
+
+  const otherDrive = await remote.toDrive('other')
+  const otherPaths = []
+  for await (const { key } of otherDrive.list('/')) otherPaths.push(key)
+  t.alike(otherPaths, ['/only-other.txt'], 'other branch lists only its own file')
+})
+
+test('deleteBranch leaves other branches intact', async (t) => {
+  const remote = await createRemote(t, { name: 'multi-branch-delete' })
+  await remote.push('main', OID_COMMIT, makeTestObjects())
+  await remote.push('other', OID_OTHER_COMMIT, makeOtherObjects())
+
+  await remote.deleteBranch('main')
+
+  t.is(await remote.getBranchRef('main'), null, 'main branch removed')
+
+  const otherDrive = await remote.toDrive('other')
+  const otherPaths = []
+  for await (const { key } of otherDrive.list('/')) otherPaths.push(key)
+  t.alike(otherPaths, ['/only-other.txt'], 'other branch file index survives')
 })

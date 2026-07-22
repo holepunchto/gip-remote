@@ -139,6 +139,29 @@ Write git objects to a `.git` directory.
 - `opts.objectFormat` - hash algorithm, only `'sha1'` supported (default)
 - `opts.verifySizes` - verify declared sizes match buffer lengths (default `true`)
 
+## Networking and seeding
+
+`Remote` owns only the database — it does not manage the swarm or blind peering.
+The caller is responsible for replication (`swarm.on('connection', (conn) => store.replicate(conn))`)
+and, if seeding through blind peers, for adding the core to its `BlindPeering`
+instance. The underlying core is exposed via `remote.core` for exactly this.
+
+## Large objects
+
+A single Hypercore block can't exceed ~15 MiB, so a git object larger than that
+can't be stored as one record. Such objects are split across `@gip/object-chunks`
+rows (8 MiB each) and reassembled transparently by `getObject`; the `@gip/objects`
+row keeps the true `size` with an empty `data`. Objects under the limit are stored
+inline as before, and chunks replicate over the same core as everything else.
+
+> **TODO (revisit only if we add selective sync):** large blobs currently live in
+> the same core/b-tree as the metadata index. A dedicated [hyperblobs](https://github.com/holepunchto/hyperblobs)
+> content core (git-LFS / Hyperdrive style) would keep the metadata lean and allow
+> streaming reads — but it only pays off once the transport can sync/seed metadata
+> without pulling every blob (partial replication). Today clone downloads the whole
+> core regardless, so it buys nothing over chunking. Not worth the second-core
+> lifecycle until then.
+
 ## License
 
 Apache-2.0

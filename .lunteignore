@@ -1,0 +1,4 @@
+# TypeScript declaration files are type-checked by tsc, not by a JS linter.
+# lunte's no-undef rule only registers the first `declare class` in a .d.ts,
+# so it false-positives on every subsequent exported class.
+*.d.ts

@@ -103,7 +103,7 @@ test('replicate captures both commits after a follow-up push', async (t) => {
   const objs = await r2.getRefObjects(OID_COMMIT_B)
   const ids = objs.map((o) => o.id)
   t.ok(ids.includes(OID_COMMIT_B), 'getRefObjects yields B')
-  t.ok(ids.includes(OID_COMMIT_A), 'getRefObjects yields A (B\'s parent)')
+  t.ok(ids.includes(OID_COMMIT_A), "getRefObjects yields A (B's parent)")
   t.ok(ids.includes(OID_TREE_ROOT), 'getRefObjects yields the tree')
   t.ok(ids.includes(OID_BLOB1), 'getRefObjects yields the blob')
 })

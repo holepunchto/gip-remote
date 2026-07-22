@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "offset": 0,
   "schema": [
     {
@@ -89,6 +89,19 @@
       "schema": "@gip/tags",
       "derived": false,
       "key": ["name"],
+      "trigger": null
+    },
+    {
+      "name": "object-chunks",
+      "namespace": "gip",
+      "id": 7,
+      "type": 1,
+      "version": 4,
+      "versionField": null,
+      "indexes": [],
+      "schema": "@gip/object-chunks",
+      "derived": false,
+      "key": ["oid", "index"],
       "trigger": null
     }
   ]
