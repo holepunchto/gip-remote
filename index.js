@@ -1,17 +1,20 @@
 const ReadyResource = require('ready-resource')
 const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
+const ScopeLock = require('scope-lock')
 const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
 const { parseCommit, parseTag, walkTree } = require('./lib/git')
+const { getObject, putObject } = require('./lib/objects')
 
 class Remote extends ReadyResource {
-  _swarm = null
-  _store = null
   _db = null
-  _key = null
+  _link = null
+  _name = null
+  _timeout = 0
+  _writeLock = new ScopeLock()
 
   constructor(store, link, opts = {}) {
     super()
@@ -22,21 +25,19 @@ class Remote extends ReadyResource {
     let config
     if (typeof this._link === 'string') {
       this._name = this._link
-      config = { core: store.get({ name: this._link }) }
+      config = { core: store.get({ name: this._link }), autoUpdate: true }
     } else if (this._link.drive) {
       this._name = this._link.pathname?.split('/').slice(1)[0]
-      config = { key: this._link.drive.key }
+      config = { key: this._link.drive.key, autoUpdate: true }
     } else {
       this._name = this._link.name
-      config = this._link
+      config = { ...this._link, autoUpdate: true }
     }
 
-    config.autoUpdate = true
     const bee = new Hyperbee(store, config)
     this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
 
     this._timeout = opts.timeout || 240_000
-    this._blind = opts.blind
   }
 
   async _open() {
@@ -45,6 +46,17 @@ class Remote extends ReadyResource {
 
   async _close() {
     await this._db.close()
+  }
+
+  // Serialize mutations. push() does a read-modify-write of a branch's
+  // denormalized object set, so concurrent writers must not interleave.
+  async _locked(fn) {
+    await this._writeLock.lock()
+    try {
+      return await fn()
+    } finally {
+      this._writeLock.unlock()
+    }
   }
 
   get name() {
@@ -75,7 +87,7 @@ class Remote extends ReadyResource {
   // --- Objects ---
 
   async getObject(oid) {
-    return this._db.get('@gip/objects', { oid })
+    return getObject(this._db, oid)
   }
 
   // --- Refs / Branches ---
@@ -86,8 +98,10 @@ class Remote extends ReadyResource {
   }
 
   async setHead(branch) {
-    await this._db.insert('@gip/head', { branch })
-    await this._db.flush()
+    return this._locked(async () => {
+      await this._db.insert('@gip/head', { branch })
+      await this._db.flush()
+    })
   }
 
   async getAllRefs() {
@@ -119,13 +133,20 @@ class Remote extends ReadyResource {
   }
 
   async deleteBranch(branchName) {
+    return this._locked(() => this._deleteBranch(branchName))
+  }
+
+  async _deleteBranch(branchName) {
     const branch = await this._db.get('@gip/branches', { name: branchName })
     if (!branch) return false
 
     await this._db.delete('@gip/branches', { name: branchName })
 
     // Remove file records for this branch
-    const files = this._db.find('@gip/files', { branch: branchName })
+    const files = this._db.find('@gip/files', {
+      gte: { branch: branchName },
+      lte: { branch: branchName }
+    })
     for await (const file of files) {
       await this._db.delete('@gip/files', { branch: branchName, path: file.path })
     }
@@ -135,6 +156,10 @@ class Remote extends ReadyResource {
   }
 
   async deleteTag(tagName) {
+    return this._locked(() => this._deleteTag(tagName))
+  }
+
+  async _deleteTag(tagName) {
     const tag = await this._db.get('@gip/tags', { name: tagName })
     if (!tag) return false
 
@@ -142,7 +167,10 @@ class Remote extends ReadyResource {
 
     // Remove file records for this tag
     const filesBranch = 'tags/' + tagName
-    const files = this._db.find('@gip/files', { branch: filesBranch })
+    const files = this._db.find('@gip/files', {
+      gte: { branch: filesBranch },
+      lte: { branch: filesBranch }
+    })
     for await (const file of files) {
       await this._db.delete('@gip/files', { branch: filesBranch, path: file.path })
     }
@@ -154,17 +182,18 @@ class Remote extends ReadyResource {
   // --- Push: store objects + index branch/tag + files ---
 
   async push(refName, oid, objects) {
+    return this._locked(() => this._push(refName, oid, objects))
+  }
+
+  async _push(refName, oid, objects) {
     // 1. Store all git objects
     for (const [objOid, obj] of objects) {
-      const existing = await this.getObject(objOid)
+      // Cheap presence check — the stub row exists for chunked objects too,
+      // so we skip reassembling chunks just to dedupe.
+      const existing = await this._db.get('@gip/objects', { oid: objOid })
       if (existing) continue
 
-      await this._db.insert('@gip/objects', {
-        oid: objOid,
-        type: obj.type,
-        size: obj.size,
-        data: obj.data
-      })
+      await putObject(this._db, objOid, obj)
     }
 
     // 2. Dereference tag objects to find the commit
@@ -203,7 +232,10 @@ class Remote extends ReadyResource {
     //     records — O(N) in the size of the indexed tree, same order as
     //     the insert step that follows.
     const newPaths = new Set(files.map((f) => f.path))
-    const existingFiles = this._db.find('@gip/files', { branch: refName })
+    const existingFiles = this._db.find('@gip/files', {
+      gte: { branch: refName },
+      lte: { branch: refName }
+    })
     for await (const file of existingFiles) {
       if (!newPaths.has(file.path)) {
         await this._db.delete('@gip/files', { branch: refName, path: file.path })
@@ -403,23 +435,35 @@ class Remote extends ReadyResource {
   }
 
   async waitForPeers() {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        clearInterval(interval)
-        reject(new Error(`Timeout waiting for peers after ${this._timeout}ms`))
-      }, this._timeout)
+    await this.ready()
 
-      const interval = setInterval(async () => {
-        if (this.availablePeers > 0) {
-          clearInterval(interval)
-          clearTimeout(timeout)
-          await this._db.update()
-          resolve()
-        } else {
-          await this._db.update()
+    if (this.availablePeers === 0) {
+      const core = this._db.core
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          clearTimeout(timer)
+          core.removeListener('peer-add', onPeer)
+          this.removeListener('close', onClose)
         }
-      }, 500)
-    })
+        const onPeer = () => {
+          cleanup()
+          resolve()
+        }
+        const onClose = () => {
+          cleanup()
+          reject(new Error('Remote closed while waiting for peers'))
+        }
+        const timer = setTimeout(() => {
+          cleanup()
+          reject(new Error(`Timeout waiting for peers after ${this._timeout}ms`))
+        }, this._timeout)
+
+        core.on('peer-add', onPeer)
+        this.once('close', onClose)
+      })
+    }
+
+    await this._db.update()
   }
 }
 

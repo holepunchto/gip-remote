@@ -4,7 +4,7 @@
 const { IndexEncoder, c, b4a } = require('hyperdb/runtime')
 const { version, getEncoding, setVersion } = require('./messages.js')
 
-const versions = { schema: version, db: 3 }
+const versions = { schema: version, db: 4 }
 
 // '@gip/repos' collection key
 const collection0_key = new IndexEncoder([IndexEncoder.STRING], { prefix: 0 })
@@ -451,7 +451,91 @@ const collection6 = {
   decodedVersion: 0
 }
 
-const collections = [collection0, collection1, collection2, collection3, collection5, collection6]
+// '@gip/object-chunks' collection key
+const collection7_key = new IndexEncoder([IndexEncoder.STRING, IndexEncoder.UINT], { prefix: 7 })
+
+function collection7_indexify(record) {
+  const arr = []
+
+  const a0 = record.oid
+  if (a0 === undefined) return arr
+  arr.push(a0)
+
+  const a1 = record.index
+  if (a1 === undefined) return arr
+  arr.push(a1)
+
+  return arr
+}
+
+// '@gip/object-chunks' value encoding
+const collection7_enc = getEncoding('@gip/object-chunks/hyperdb#7')
+
+// '@gip/object-chunks' reconstruction function
+function collection7_reconstruct(schemaVersion, keyBuf, valueBuf) {
+  const key = collection7_key.decode(keyBuf)
+  setVersion(schemaVersion)
+  const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
+  const type = c.uint.decode(state)
+  if (type !== 0) throw new Error('Unknown collection type: ' + type)
+  collection7.decodedVersion = c.uint.decode(state)
+  const record = collection7_enc.decode(state)
+  record.oid = key[0]
+  record.index = key[1]
+  return record
+}
+// '@gip/object-chunks' key reconstruction function
+function collection7_reconstruct_key(keyBuf) {
+  const key = collection7_key.decode(keyBuf)
+  return {
+    oid: key[0],
+    index: key[1]
+  }
+}
+
+// '@gip/object-chunks'
+const collection7 = {
+  name: '@gip/object-chunks',
+  id: 7,
+  version: 4,
+  encodeKey(record) {
+    const key = [record.oid, record.index]
+    return collection7_key.encode(key)
+  },
+  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+    return collection7_key.encodeRange({
+      gt: gt ? collection7_indexify(gt) : null,
+      lt: lt ? collection7_indexify(lt) : null,
+      gte: gte ? collection7_indexify(gte) : null,
+      lte: lte ? collection7_indexify(lte) : null
+    })
+  },
+  encodeValue(schemaVersion, collectionVersion, record) {
+    setVersion(schemaVersion)
+    const state = { start: 0, end: 2, buffer: null }
+    collection7_enc.preencode(state, record)
+    state.buffer = b4a.allocUnsafe(state.end)
+    state.buffer[state.start++] = 0
+    state.buffer[state.start++] = collectionVersion
+    collection7_enc.encode(state, record)
+    return state.buffer
+  },
+  trigger: null,
+  reconstruct: collection7_reconstruct,
+  reconstructKey: collection7_reconstruct_key,
+  indexes: [],
+  decodedVersion: 0
+}
+
+const collections = [
+  collection0,
+  collection1,
+  collection2,
+  collection3,
+  collection5,
+  collection6,
+  collection7
+]
 
 const indexes = [index4]
 
@@ -471,6 +555,8 @@ function resolveCollection(name) {
       return collection5
     case '@gip/tags':
       return collection6
+    case '@gip/object-chunks':
+      return collection7
     default:
       return null
   }

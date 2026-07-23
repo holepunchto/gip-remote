@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "schema": [
     {
       "name": "repos",
@@ -262,6 +262,32 @@
           "array": true,
           "type": "string",
           "version": 3
+        }
+      ]
+    },
+    {
+      "name": "object-chunks",
+      "namespace": "gip",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "oid",
+          "required": true,
+          "type": "string",
+          "version": 4
+        },
+        {
+          "name": "index",
+          "required": true,
+          "type": "uint",
+          "version": 4
+        },
+        {
+          "name": "data",
+          "required": true,
+          "type": "buffer",
+          "version": 4
         }
       ]
     }

@@ -8,8 +8,7 @@ const {
   OID_BLOB2,
   OID_COMMIT,
   OID_TAG,
-  OID_TREE_ROOT,
-  OID_TREE_SRC
+  OID_TREE_ROOT
 } = require('./helpers')
 
 const { parseCommit, walkTree } = require('../')
@@ -370,16 +369,10 @@ test('push attributes each file to the commit that actually last touched it', as
   objects.set(BLOB_B, { type: 'blob', size: bData.length, data: bData })
 
   // Trees — C1 has src{a.js v1}, C2 has src{a.js v2}, C3 has src{a.js v2, b.js}
-  const treeSrcC1 = Buffer.concat([
-    Buffer.from('100644 a.js\0'),
-    Buffer.from(BLOB_A_V1, 'hex')
-  ])
+  const treeSrcC1 = Buffer.concat([Buffer.from('100644 a.js\0'), Buffer.from(BLOB_A_V1, 'hex')])
   objects.set(TREE_SRC_C1, { type: 'tree', size: treeSrcC1.length, data: treeSrcC1 })
 
-  const treeSrcC2 = Buffer.concat([
-    Buffer.from('100644 a.js\0'),
-    Buffer.from(BLOB_A_V2, 'hex')
-  ])
+  const treeSrcC2 = Buffer.concat([Buffer.from('100644 a.js\0'), Buffer.from(BLOB_A_V2, 'hex')])
   objects.set(TREE_SRC_C2, { type: 'tree', size: treeSrcC2.length, data: treeSrcC2 })
 
   // src tree entries must be name-sorted (a.js before b.js)
@@ -771,4 +764,102 @@ test('drive readdir returns immediate children', async (t) => {
   t.ok(rootEntries.includes('README.md'), 'has README.md')
   t.ok(rootEntries.includes('src'), 'has src dir')
   t.is(rootEntries.length, 2)
+})
+
+// --- HEAD ---
+
+test('getHead is null before anything is pushed', async (t) => {
+  const remote = await createRemote(t, { name: 'head-empty' })
+  t.is(await remote.getHead(), null)
+})
+
+test('setHead and getHead round-trip', async (t) => {
+  const remote = await createRemote(t, { name: 'head-set' })
+  await remote.setHead('develop')
+  t.is(await remote.getHead(), 'develop')
+
+  await remote.setHead('main')
+  t.is(await remote.getHead(), 'main', 'setHead overwrites')
+})
+
+// --- getRefObjects ---
+
+test('getRefObjects returns empty for an unknown ref oid', async (t) => {
+  const remote = await createRemote(t, { name: 'ref-unknown' })
+  await remote.push('main', OID_COMMIT, makeTestObjects())
+  const results = await remote.getRefObjects('de'.repeat(20))
+  t.alike(results, [])
+})
+
+test('getRefObjects invokes onLoad once per object with its size', async (t) => {
+  const remote = await createRemote(t, { name: 'ref-onload' })
+  const objects = makeTestObjects()
+  await remote.push('main', OID_COMMIT, objects)
+
+  const sizes = []
+  const results = await remote.getRefObjects(OID_COMMIT, (size) => sizes.push(size))
+  t.is(sizes.length, results.length, 'onLoad called once per returned object')
+  t.absent(
+    sizes.some((s) => typeof s !== 'number'),
+    'each reported size is a number'
+  )
+})
+
+// --- Peer discovery ---
+
+test('waitForPeers rejects after the timeout when no peers appear', async (t) => {
+  const store = await createStore(t)
+  const remote = new (require('../').Remote)(store, 'lonely', { timeout: 500 })
+  t.teardown(() => remote.close())
+  await remote.ready()
+
+  await t.exception(remote.waitForPeers(), /Timeout waiting for peers/)
+})
+
+test('waitForPeers rejects if the remote closes while waiting', async (t) => {
+  const store = await createStore(t)
+  const remote = new (require('../').Remote)(store, 'closing', { timeout: 60000 })
+  await remote.ready()
+
+  const waiting = remote.waitForPeers()
+  await remote.close()
+  await t.exception(waiting, /closed while waiting/)
+})
+
+// --- Concurrency ---
+
+test('concurrent pushes to one branch do not lose objects', async (t) => {
+  const remote = await createRemote(t, { name: 'concurrent-push' })
+  await remote.push('main', OID_COMMIT, makeTestObjects())
+
+  const OID_B = 'b0'.repeat(20)
+  const OID_C = 'c0'.repeat(20)
+
+  // Two thin follow-up pushes, each carrying only its own new commit parented
+  // on the base. Both do a read-modify-write of the branch's object set, so
+  // without serialization the second insert clobbers the first.
+  const mkCommit = (oid, message) => {
+    const data = Buffer.from(
+      [
+        `tree ${OID_TREE_ROOT}`,
+        `parent ${OID_COMMIT}`,
+        'author Test User <test@test.com> 1700000200 +0000',
+        'committer Test User <test@test.com> 1700000200 +0000',
+        '',
+        message
+      ].join('\n')
+    )
+    return new Map([[oid, { type: 'commit', size: data.length, data }]])
+  }
+
+  await Promise.all([
+    remote.push('main', OID_B, mkCommit(OID_B, 'commit b')),
+    remote.push('main', OID_C, mkCommit(OID_C, 'commit c'))
+  ])
+
+  const ref = await remote.getBranchRef('main')
+  const ids = (await remote.getRefObjects(ref.oid)).map((o) => o.id)
+  t.ok(ids.includes(OID_B), 'branch object set kept commit B')
+  t.ok(ids.includes(OID_C), 'branch object set kept commit C')
+  t.ok(ids.includes(OID_COMMIT), 'branch object set kept the base commit')
 })

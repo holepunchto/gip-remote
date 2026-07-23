@@ -4,6 +4,7 @@
   "description": "Git+Pear remote DB for handling git data",
   "main": "index.js",
   "scripts": {
+    "build": "node build.js && prettier schema --write",
     "format": "prettier . --write",
     "test": "brittle-bare test/all.js",
     "lint": "prettier . --check && lunte"
@@ -57,26 +58,27 @@
   },
   "homepage": "https://github.com/holepunchto/gip-remote",
   "devDependencies": {
-    "b4a": "^1.8.0",
-    "bare-subprocess": "^5.2.3",
-    "brittle": "^3.19.1",
-    "corestore": "^7.9.2",
-    "hyperdht": "^6.29.6",
+    "b4a": "^1.8.1",
+    "bare-subprocess": "^6.1.0",
+    "brittle": "^4.1.0",
+    "corestore": "^7.11.1",
+    "hyperdht": "^6.33.0",
     "hyperswarm": "^4.17.0",
-    "prettier": "^3.8.1",
+    "prettier": "^3.9.6",
     "prettier-config-holepunch": "^2.0.0",
     "test-tmp": "^1.4.0",
     "z32": "^1.1.0"
   },
   "dependencies": {
-    "bare-fs": "^4.5.6",
-    "bare-path": "^3.0.0",
-    "hyperbee2": "^2.8.0",
-    "hyperdb": "^6.3.0",
-    "mirror-drive": "^1.13.0",
-    "pear-link": "^4.2.1",
+    "bare-fs": "^4.7.4",
+    "bare-path": "^3.1.1",
+    "hyperbee2": "^2.10.3",
+    "hyperdb": "^6.7.0",
+    "mirror-drive": "^1.14.2",
+    "pear-link": "^5.0.0",
     "ready-resource": "^1.2.0",
     "rebuild-git": "^1.1.1",
-    "streamx": "^2.25.0"
+    "scope-lock": "^1.2.4",
+    "streamx": "^2.28.0"
   }
 }
