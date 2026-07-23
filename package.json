@@ -64,6 +64,7 @@
     "corestore": "^7.11.1",
     "hyperdht": "^6.33.0",
     "hyperswarm": "^4.17.0",
+    "lunte": "^1.8.4",
     "prettier": "^3.9.6",
     "prettier-config-holepunch": "^2.0.0",
     "test-tmp": "^1.4.0",
