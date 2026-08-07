@@ -8,6 +8,7 @@ async function runTests() {
   test.pause()
 
   await import('./basic.js')
+  await import('./compression.js')
   await import('./drive.js')
   await import('./large-objects.js')
   await import('./link.js')

@@ -181,24 +181,44 @@ class Remote extends ReadyResource {
 
   // --- Push: store objects + index branch/tag + files ---
 
-  async push(refName, oid, objects) {
-    return this._locked(() => this._push(refName, oid, objects))
+  // `objects` may be a thin set — just the objects the remote doesn't have
+  // yet. Anything else needed for indexing (the tip on a no-op push,
+  // unchanged sub-trees) is pulled from the store on demand. opts.allOids is
+  // the full reachable oid list for the ref when the caller knows it;
+  // without it the pushed set is assumed complete (a full pack, as before).
+  async push(refName, oid, objects, opts) {
+    return this._locked(() => this._push(refName, oid, objects, opts))
   }
 
-  async _push(refName, oid, objects) {
-    // 1. Store all git objects
-    for (const [objOid, obj] of objects) {
-      // Cheap presence check — the stub row exists for chunked objects too,
-      // so we skip reassembling chunks just to dedupe.
-      const existing = await this._db.get('@gip/objects', { oid: objOid })
-      if (existing) continue
+  // Look an object up in the pushed set first, then in the store — thin
+  // pushes reference objects that arrived in an earlier push.
+  async _resolveObject(objects, oid) {
+    const obj = objects.get(oid)
+    if (obj) return obj
+    const stored = await getObject(this._db, oid)
+    if (stored) objects.set(oid, stored)
+    return stored
+  }
 
-      await putObject(this._db, objOid, obj)
+  async _push(refName, oid, objects, opts = {}) {
+    // 1. Store all git objects the remote doesn't already have. The presence
+    // check is cheap (the stub row exists for chunked objects too) and runs
+    // in batches instead of one awaited round-trip per object.
+    const oids = [...objects.keys()]
+    for (let i = 0; i < oids.length; i += 256) {
+      const batch = oids.slice(i, i + 256)
+      const existing = await Promise.all(
+        batch.map((objOid) => this._db.get('@gip/objects', { oid: objOid }))
+      )
+      for (let j = 0; j < batch.length; j++) {
+        if (existing[j]) continue
+        await putObject(this._db, batch[j], objects.get(batch[j]))
+      }
     }
 
     // 2. Dereference tag objects to find the commit
     let resolvedOid = oid
-    let obj = objects.get(resolvedOid)
+    let obj = await this._resolveObject(objects, resolvedOid)
     if (!obj) throw new Error('Object not found: ' + resolvedOid)
 
     let tagMeta = null
@@ -207,7 +227,7 @@ class Remote extends ReadyResource {
       if (!tagMeta) tagMeta = tag
       if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
       resolvedOid = tag.object
-      obj = objects.get(resolvedOid)
+      obj = await this._resolveObject(objects, resolvedOid)
       if (!obj) throw new Error('Object not found: ' + resolvedOid)
     }
 
@@ -218,8 +238,20 @@ class Remote extends ReadyResource {
     const commit = parseCommit(obj.data)
     if (!commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
 
-    // 3. Walk tree to enumerate files
-    const files = walkTree(objects, commit.tree, '')
+    // 3. Walk tree to enumerate files. A thin push doesn't re-send unchanged
+    // sub-trees, so pull whatever the walk couldn't expand from the store
+    // and re-walk until the tree is complete.
+    let files
+    for (;;) {
+      const missing = []
+      files = walkTree(objects, commit.tree, '', missing)
+      if (missing.length === 0) break
+      let resolved = 0
+      for (const treeOid of missing) {
+        if (await this._resolveObject(objects, treeOid)) resolved++
+      }
+      if (resolved === 0) break // genuinely absent — index what we can see
+    }
 
     // 4a. Reconcile deletions — remove file records whose paths no longer
     //     exist in the new tree. Without this, files removed in a commit
@@ -328,7 +360,7 @@ class Remote extends ReadyResource {
         tagger: tagMeta ? tagMeta.tagger : null,
         message: tagMeta ? tagMeta.message : null,
         timestamp: tagMeta ? tagMeta.timestamp : 0,
-        objects: [...objects.keys()]
+        objects: [...(opts.allOids ?? objects.keys())]
       })
     } else {
       // 5b. Insert/update branch record.
@@ -344,7 +376,7 @@ class Remote extends ReadyResource {
       // commit" symptom.
       const prev = await this._db.get('@gip/branches', { name: refName })
       const merged = new Set(prev ? prev.objects : [])
-      for (const k of objects.keys()) merged.add(k)
+      for (const k of opts.allOids ?? objects.keys()) merged.add(k)
 
       await this._db.insert('@gip/branches', {
         name: refName,
