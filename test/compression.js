@@ -2,8 +2,6 @@ const test = require('brittle')
 const {
   createRemote,
   makeTestObjects,
-  OID_BLOB1,
-  OID_BLOB2,
   OID_COMMIT,
   OID_TREE_ROOT,
   OID_TREE_SRC
@@ -101,9 +99,8 @@ test('thin push resolves the tip and unchanged sub-trees from the store', async 
     [OID_TREE_ROOT2, { type: 'tree', size: rootTree2.length, data: rootTree2 }],
     [OID_COMMIT2, { type: 'commit', size: commit2.length, data: commit2 }]
   ])
-  const allOids = [OID_BLOB1, OID_BLOB2, OID_TREE_SRC, OID_BLOB3, OID_TREE_ROOT2, OID_COMMIT2]
 
-  await remote.push('main', OID_COMMIT2, thin, { allOids })
+  await remote.push('main', OID_COMMIT2, thin)
 
   const ref = await remote.getBranchRef('main')
   t.is(ref.oid, OID_COMMIT2)
@@ -114,9 +111,8 @@ test('thin push resolves the tip and unchanged sub-trees from the store', async 
   const paths = files.map((f) => f.path).sort()
   t.alike(paths, ['/README.md', '/src/index.js'])
 
-  // A clone of the new head must get the full reachable set — the branch
-  // record merges the previous push's objects with this one, so the old
-  // commit and its tree stay listed (they're reachable via the parent).
+  // A clone of the new head must get the full reachable set — the graph
+  // walk reaches the old commit and its tree through the parent edge.
   const objs = await remote.getRefObjects(OID_COMMIT2)
   t.is(objs.length, 8)
 })
@@ -154,9 +150,7 @@ test('no-op push of an existing tip resolves the commit from the store', async (
   await remote.push('main', OID_COMMIT, makeTestObjects())
 
   // Re-push the same tip with an empty thin set — everything already stored.
-  await remote.push('main', OID_COMMIT, new Map(), {
-    allOids: [OID_BLOB1, OID_BLOB2, OID_TREE_SRC, OID_TREE_ROOT, OID_COMMIT]
-  })
+  await remote.push('main', OID_COMMIT, new Map())
 
   const ref = await remote.getBranchRef('main')
   t.is(ref.oid, OID_COMMIT)

@@ -6,8 +6,9 @@ const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
-const { parseCommit, parseTag, walkTree } = require('./lib/git')
+const { parseCommit, parseTag, walkTree, treeEntries } = require('./lib/git')
 const { getObject, putObject } = require('./lib/objects')
+const { TreeDrive } = RemoteDrive
 
 class Remote extends ReadyResource {
   _db = null
@@ -15,6 +16,10 @@ class Remote extends ReadyResource {
   _name = null
   _timeout = 0
   _writeLock = new ScopeLock()
+  // Oids confirmed present this session — objects are append-only, so a
+  // confirmation never goes stale. Saves re-checking the shared thin set on
+  // every ref of a multi-ref push (git push --tags is one push() per tag).
+  _storedOids = new Set()
 
   constructor(store, link, opts = {}) {
     super()
@@ -183,11 +188,9 @@ class Remote extends ReadyResource {
 
   // `objects` may be a thin set — just the objects the remote doesn't have
   // yet. Anything else needed for indexing (the tip on a no-op push,
-  // unchanged sub-trees) is pulled from the store on demand. opts.allOids is
-  // the full reachable oid list for the ref when the caller knows it;
-  // without it the pushed set is assumed complete (a full pack, as before).
-  async push(refName, oid, objects, opts) {
-    return this._locked(() => this._push(refName, oid, objects, opts))
+  // unchanged sub-trees) is pulled from the store on demand.
+  async push(refName, oid, objects) {
+    return this._locked(() => this._push(refName, oid, objects))
   }
 
   // Look an object up in the pushed set first, then in the store — thin
@@ -200,19 +203,19 @@ class Remote extends ReadyResource {
     return stored
   }
 
-  async _push(refName, oid, objects, opts = {}) {
+  async _push(refName, oid, objects) {
     // 1. Store all git objects the remote doesn't already have. The presence
     // check is cheap (the stub row exists for chunked objects too) and runs
     // in batches instead of one awaited round-trip per object.
-    const oids = [...objects.keys()]
+    const oids = [...objects.keys()].filter((objOid) => !this._storedOids.has(objOid))
     for (let i = 0; i < oids.length; i += 256) {
       const batch = oids.slice(i, i + 256)
       const existing = await Promise.all(
         batch.map((objOid) => this._db.get('@gip/objects', { oid: objOid }))
       )
       for (let j = 0; j < batch.length; j++) {
-        if (existing[j]) continue
-        await putObject(this._db, batch[j], objects.get(batch[j]))
+        if (!existing[j]) await putObject(this._db, batch[j], objects.get(batch[j]))
+        this._storedOids.add(batch[j])
       }
     }
 
@@ -237,6 +240,25 @@ class Remote extends ReadyResource {
 
     const commit = parseCommit(obj.data)
     if (!commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
+
+    // Tags stop here: no denormalized object list (getRefObjects walks the
+    // graph) and no file index — their trees are immutable and toDrive
+    // serves them lazily from the tree objects. Indexing every tag's full
+    // tree made pushing a release history O(tags × files).
+    if (refName.startsWith('tags/')) {
+      await this._db.insert('@gip/tags', {
+        name: refName.slice(5),
+        oid,
+        commitOid: resolvedOid,
+        treeOid: commit.tree,
+        tagger: tagMeta ? tagMeta.tagger : null,
+        message: tagMeta ? tagMeta.message : null,
+        timestamp: tagMeta ? tagMeta.timestamp : 0,
+        objects: []
+      })
+      await this._db.flush()
+      return
+    }
 
     // 3. Walk tree to enumerate files. A thin push doesn't re-send unchanged
     // sub-trees, so pull whatever the walk couldn't expand from the store
@@ -347,52 +369,24 @@ class Remote extends ReadyResource {
       })
     }
 
-    const isTag = refName.startsWith('tags/')
+    // 5. Insert/update the branch record. No denormalized object list —
+    // getRefObjects walks the graph from the tip, so the record only carries
+    // the tip metadata. (Records written by older versions still hold their
+    // lists; the walk is the fallback-free path for empty ones.)
+    await this._db.insert('@gip/branches', {
+      name: refName,
+      commitOid: oid,
+      treeOid: commit.tree,
+      author: commit.author,
+      message: commit.message,
+      timestamp: commit.timestamp,
+      objects: []
+    })
 
-    if (isTag) {
-      // 5a. Insert tag record
-      const tagName = refName.slice(5) // strip 'tags/'
-      await this._db.insert('@gip/tags', {
-        name: tagName,
-        oid,
-        commitOid: resolvedOid,
-        treeOid: commit.tree,
-        tagger: tagMeta ? tagMeta.tagger : null,
-        message: tagMeta ? tagMeta.message : null,
-        timestamp: tagMeta ? tagMeta.timestamp : 0,
-        objects: [...(opts.allOids ?? objects.keys())]
-      })
-    } else {
-      // 5b. Insert/update branch record.
-      //
-      // `objects` is the denormalized "everything reachable from this branch"
-      // set used by getRefObjects() at fetch time. CRITICAL: we must MERGE
-      // with the prior record's objects, not overwrite. A real git client
-      // sends a thin pack on follow-up pushes (only the new objects), so
-      // `objects.keys()` here would be e.g. just {commit B, new tree} —
-      // commit A and its tree from the previous push would be dropped from
-      // the list, and a fresh clone calling getRefObjects(headOfB) would be
-      // missing every parent commit. That's the "I cloned and lost a
-      // commit" symptom.
-      const prev = await this._db.get('@gip/branches', { name: refName })
-      const merged = new Set(prev ? prev.objects : [])
-      for (const k of opts.allOids ?? objects.keys()) merged.add(k)
-
-      await this._db.insert('@gip/branches', {
-        name: refName,
-        commitOid: oid,
-        treeOid: commit.tree,
-        author: commit.author,
-        message: commit.message,
-        timestamp: commit.timestamp,
-        objects: [...merged]
-      })
-
-      // 6. Set HEAD to first branch pushed (like git init)
-      const currentHead = await this.getHead()
-      if (!currentHead) {
-        await this._db.insert('@gip/head', { branch: refName })
-      }
+    // 6. Set HEAD to first branch pushed (like git init)
+    const currentHead = await this.getHead()
+    if (!currentHead) {
+      await this._db.insert('@gip/head', { branch: refName })
     }
 
     // 7. Flush
@@ -401,7 +395,10 @@ class Remote extends ReadyResource {
 
   // --- Fetch support ---
 
-  async getRefObjects(oid, onLoad) {
+  // opts.seen — a Set shared across calls so a multi-ref fetch (a clone
+  // pulls every branch and tag) walks shared history once; objects already
+  // seen are omitted from the result, the caller has them.
+  async getRefObjects(oid, onLoad, opts = {}) {
     let record = null
 
     // Check branches first
@@ -426,16 +423,55 @@ class Remote extends ReadyResource {
 
     if (!record) return []
 
+    const seen = opts.seen ?? new Set()
+
+    // Records written by older versions carry the denormalized reachable
+    // set — serve it directly.
+    if (record.objects && record.objects.length > 0) {
+      const results = []
+      for (const objOid of record.objects) {
+        if (seen.has(objOid)) continue
+        seen.add(objOid)
+
+        const obj = await this.getObject(objOid)
+        if (!obj) continue
+
+        // Empty blobs have null data after round-tripping through compact-encoding
+        const data = obj.data || Buffer.alloc(0)
+
+        if (onLoad) onLoad(obj.size)
+        results.push({ ...obj, data, id: objOid })
+      }
+      return results
+    }
+
+    // Walk the object graph from the tip — pushes guarantee every reachable
+    // object is in the store, so traversal replaces the stored list. Missing
+    // parents just bound the walk (shallow-seeded repos).
     const results = []
-    for (const objOid of record.objects) {
-      const obj = await this.getObject(objOid)
+    const stack = [oid]
+    while (stack.length > 0) {
+      const cur = stack.pop()
+      if (seen.has(cur)) continue
+      seen.add(cur)
+
+      const obj = await this.getObject(cur)
       if (!obj) continue
 
-      // Empty blobs have null data after round-tripping through compact-encoding
       const data = obj.data || Buffer.alloc(0)
-
       if (onLoad) onLoad(obj.size)
-      results.push({ ...obj, data, id: objOid })
+      results.push({ ...obj, data, id: cur })
+
+      if (obj.type === 'tag') {
+        const tag = parseTag(data)
+        if (tag.object) stack.push(tag.object)
+      } else if (obj.type === 'commit') {
+        const commit = parseCommit(data)
+        if (commit.tree) stack.push(commit.tree)
+        for (const parent of commit.parents) stack.push(parent)
+      } else if (obj.type === 'tree') {
+        for (const entry of treeEntries(data)) stack.push(entry.oid)
+      }
     }
 
     return results
@@ -449,8 +485,9 @@ class Remote extends ReadyResource {
     if (!b) {
       const t = await this._db.get('@gip/tags', { name: branch })
       if (!t) return null
-      // For tags, files are stored under 'tags/<name>'
-      const drive = new RemoteDrive(this._db, { branch: 'tags/' + branch })
+      // Tags aren't file-indexed — serve the immutable tree lazily from the
+      // tree objects instead.
+      const drive = new TreeDrive(this._db, { treeOid: t.treeOid })
       await drive.ready()
       return drive
     }
