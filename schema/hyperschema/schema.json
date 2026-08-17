@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "schema": [
     {
       "name": "repos",
@@ -288,6 +288,32 @@
           "required": true,
           "type": "buffer",
           "version": 4
+        }
+      ]
+    },
+    {
+      "name": "file-commits",
+      "namespace": "gip",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "branch",
+          "required": true,
+          "type": "string",
+          "version": 5
+        },
+        {
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "version": 5
+        },
+        {
+          "name": "commitOid",
+          "required": true,
+          "type": "string",
+          "version": 5
         }
       ]
     }

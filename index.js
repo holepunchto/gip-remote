@@ -64,6 +64,23 @@ class Remote extends ReadyResource {
     }
   }
 
+  // Run `fn` against a writable snapshot, serialized behind the write lock.
+  // Readers of the main instance never see partial state — everything lands
+  // on flush, nothing on error.
+  async _transaction(fn) {
+    return this._locked(async () => {
+      const tx = this._db.transaction()
+      try {
+        const result = await fn(tx)
+        await tx.flush()
+        return result
+      } catch (err) {
+        tx.close()
+        throw err
+      }
+    })
+  }
+
   get name() {
     return this._name
   }
@@ -103,10 +120,7 @@ class Remote extends ReadyResource {
   }
 
   async setHead(branch) {
-    return this._locked(async () => {
-      await this._db.insert('@gip/head', { branch })
-      await this._db.flush()
-    })
+    return this._transaction((tx) => tx.insert('@gip/head', { branch }))
   }
 
   async getAllRefs() {
@@ -138,49 +152,49 @@ class Remote extends ReadyResource {
   }
 
   async deleteBranch(branchName) {
-    return this._locked(() => this._deleteBranch(branchName))
+    return this._transaction((tx) => this._deleteBranch(tx, branchName))
   }
 
-  async _deleteBranch(branchName) {
-    const branch = await this._db.get('@gip/branches', { name: branchName })
+  async _deleteBranch(tx, branchName) {
+    const branch = await tx.get('@gip/branches', { name: branchName })
     if (!branch) return false
 
-    await this._db.delete('@gip/branches', { name: branchName })
+    await tx.delete('@gip/branches', { name: branchName })
 
     // Remove file records for this branch
-    const files = this._db.find('@gip/files', {
+    const files = tx.find('@gip/files', {
       gte: { branch: branchName },
       lte: { branch: branchName }
     })
     for await (const file of files) {
-      await this._db.delete('@gip/files', { branch: branchName, path: file.path })
+      await tx.delete('@gip/files', { branch: branchName, path: file.path })
+      await tx.delete('@gip/file-commits', { branch: branchName, path: file.path })
     }
 
-    await this._db.flush()
     return true
   }
 
   async deleteTag(tagName) {
-    return this._locked(() => this._deleteTag(tagName))
+    return this._transaction((tx) => this._deleteTag(tx, tagName))
   }
 
-  async _deleteTag(tagName) {
-    const tag = await this._db.get('@gip/tags', { name: tagName })
+  async _deleteTag(tx, tagName) {
+    const tag = await tx.get('@gip/tags', { name: tagName })
     if (!tag) return false
 
-    await this._db.delete('@gip/tags', { name: tagName })
+    await tx.delete('@gip/tags', { name: tagName })
 
     // Remove file records for this tag
     const filesBranch = 'tags/' + tagName
-    const files = this._db.find('@gip/files', {
+    const files = tx.find('@gip/files', {
       gte: { branch: filesBranch },
       lte: { branch: filesBranch }
     })
     for await (const file of files) {
-      await this._db.delete('@gip/files', { branch: filesBranch, path: file.path })
+      await tx.delete('@gip/files', { branch: filesBranch, path: file.path })
+      await tx.delete('@gip/file-commits', { branch: filesBranch, path: file.path })
     }
 
-    await this._db.flush()
     return true
   }
 
@@ -190,20 +204,22 @@ class Remote extends ReadyResource {
   // yet. Anything else needed for indexing (the tip on a no-op push,
   // unchanged sub-trees) is pulled from the store on demand.
   async push(refName, oid, objects) {
-    return this._locked(() => this._push(refName, oid, objects))
+    const stored = []
+    await this._transaction((tx) => this._push(tx, refName, oid, objects, stored))
+    for (const o of stored) this._storedOids.add(o)
   }
 
   // Look an object up in the pushed set first, then in the store — thin
   // pushes reference objects that arrived in an earlier push.
-  async _resolveObject(objects, oid) {
+  async _resolveObject(tx, objects, oid) {
     const obj = objects.get(oid)
     if (obj) return obj
-    const stored = await getObject(this._db, oid)
+    const stored = await getObject(tx, oid)
     if (stored) objects.set(oid, stored)
     return stored
   }
 
-  async _push(refName, oid, objects) {
+  async _push(tx, refName, oid, objects, stored) {
     // 1. Store all git objects the remote doesn't already have. The presence
     // check is cheap (the stub row exists for chunked objects too) and runs
     // in batches instead of one awaited round-trip per object.
@@ -211,17 +227,17 @@ class Remote extends ReadyResource {
     for (let i = 0; i < oids.length; i += 256) {
       const batch = oids.slice(i, i + 256)
       const existing = await Promise.all(
-        batch.map((objOid) => this._db.get('@gip/objects', { oid: objOid }))
+        batch.map((objOid) => tx.get('@gip/objects', { oid: objOid }))
       )
       for (let j = 0; j < batch.length; j++) {
-        if (!existing[j]) await putObject(this._db, batch[j], objects.get(batch[j]))
-        this._storedOids.add(batch[j])
+        if (!existing[j]) await putObject(tx, batch[j], objects.get(batch[j]))
+        stored.push(batch[j])
       }
     }
 
     // 2. Dereference tag objects to find the commit
     let resolvedOid = oid
-    let obj = await this._resolveObject(objects, resolvedOid)
+    let obj = await this._resolveObject(tx, objects, resolvedOid)
     if (!obj) throw new Error('Object not found: ' + resolvedOid)
 
     let tagMeta = null
@@ -230,7 +246,7 @@ class Remote extends ReadyResource {
       if (!tagMeta) tagMeta = tag
       if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
       resolvedOid = tag.object
-      obj = await this._resolveObject(objects, resolvedOid)
+      obj = await this._resolveObject(tx, objects, resolvedOid)
       if (!obj) throw new Error('Object not found: ' + resolvedOid)
     }
 
@@ -246,7 +262,7 @@ class Remote extends ReadyResource {
     // serves them lazily from the tree objects. Indexing every tag's full
     // tree made pushing a release history O(tags × files).
     if (refName.startsWith('tags/')) {
-      await this._db.insert('@gip/tags', {
+      await tx.insert('@gip/tags', {
         name: refName.slice(5),
         oid,
         commitOid: resolvedOid,
@@ -256,7 +272,6 @@ class Remote extends ReadyResource {
         timestamp: tagMeta ? tagMeta.timestamp : 0,
         objects: []
       })
-      await this._db.flush()
       return
     }
 
@@ -270,7 +285,7 @@ class Remote extends ReadyResource {
       if (missing.length === 0) break
       let resolved = 0
       for (const treeOid of missing) {
-        if (await this._resolveObject(objects, treeOid)) resolved++
+        if (await this._resolveObject(tx, objects, treeOid)) resolved++
       }
       if (resolved === 0) break // genuinely absent — index what we can see
     }
@@ -286,13 +301,14 @@ class Remote extends ReadyResource {
     //     records — O(N) in the size of the indexed tree, same order as
     //     the insert step that follows.
     const newPaths = new Set(files.map((f) => f.path))
-    const existingFiles = this._db.find('@gip/files', {
+    const existingFiles = tx.find('@gip/files', {
       gte: { branch: refName },
       lte: { branch: refName }
     })
     for await (const file of existingFiles) {
       if (!newPaths.has(file.path)) {
-        await this._db.delete('@gip/files', { branch: refName, path: file.path })
+        await tx.delete('@gip/files', { branch: refName, path: file.path })
+        await tx.delete('@gip/file-commits', { branch: refName, path: file.path })
       }
     }
 
@@ -319,7 +335,7 @@ class Remote extends ReadyResource {
     const oldestInPack = fileLastTouch.oldest
 
     for (const file of files) {
-      const existing = await this._db.get('@gip/files', {
+      const existing = await tx.get('@gip/files', {
         branch: refName,
         path: file.path
       })
@@ -340,13 +356,15 @@ class Remote extends ReadyResource {
         meta = {
           author: oldestInPack.author,
           message: oldestInPack.message,
-          timestamp: oldestInPack.timestamp
+          timestamp: oldestInPack.timestamp,
+          commitOid: oldestInPack.oid
         }
       }
 
       // Idempotency: if the existing row already reflects the same blob,
       // mode, and metadata we'd write, skip the insert. Saves a write
-      // round-trip on no-op pushes (e.g. retries).
+      // round-trip on no-op pushes (e.g. retries). The attribution row is
+      // still written when absent so rows from before it existed backfill.
       if (
         existing &&
         existing.oid === file.oid &&
@@ -354,10 +372,21 @@ class Remote extends ReadyResource {
         existing.message === meta.message &&
         existing.timestamp === meta.timestamp
       ) {
+        const attributed = await tx.get('@gip/file-commits', {
+          branch: refName,
+          path: file.path
+        })
+        if (!attributed) {
+          await tx.insert('@gip/file-commits', {
+            branch: refName,
+            path: file.path,
+            commitOid: meta.commitOid
+          })
+        }
         continue
       }
 
-      await this._db.insert('@gip/files', {
+      await tx.insert('@gip/files', {
         branch: refName,
         path: file.path,
         oid: file.oid,
@@ -367,13 +396,18 @@ class Remote extends ReadyResource {
         message: meta.message,
         timestamp: meta.timestamp
       })
+      await tx.insert('@gip/file-commits', {
+        branch: refName,
+        path: file.path,
+        commitOid: meta.commitOid
+      })
     }
 
     // 5. Insert/update the branch record. No denormalized object list —
     // getRefObjects walks the graph from the tip, so the record only carries
     // the tip metadata. (Records written by older versions still hold their
     // lists; the walk is the fallback-free path for empty ones.)
-    await this._db.insert('@gip/branches', {
+    await tx.insert('@gip/branches', {
       name: refName,
       commitOid: oid,
       treeOid: commit.tree,
@@ -384,13 +418,10 @@ class Remote extends ReadyResource {
     })
 
     // 6. Set HEAD to first branch pushed (like git init)
-    const currentHead = await this.getHead()
+    const currentHead = await tx.get('@gip/head', {})
     if (!currentHead) {
-      await this._db.insert('@gip/head', { branch: refName })
+      await tx.insert('@gip/head', { branch: refName })
     }
-
-    // 7. Flush
-    await this._db.flush()
   }
 
   // --- Fetch support ---
@@ -542,11 +573,11 @@ class Remote extends ReadyResource {
  * commit whose tree differs at that path from its parent's tree.
  *
  * Returns:
- *   - byPath:  Map<path, { author, message, timestamp }> for paths we
- *              could attribute within the pack.
- *   - oldest:  the oldest commit reached (used as a fallback by callers
- *              when the pack is shallow and a path was already at its
- *              current blob before the pack window).
+ *   - byPath:  Map<path, { author, message, timestamp, commitOid }> for
+ *              paths we could attribute within the pack.
+ *   - oldest:  the oldest commit reached, with its `oid` (used as a
+ *              fallback by callers when the pack is shallow and a path was
+ *              already at its current blob before the pack window).
  *
  * Pure function — does no IO, just inspects the in-memory `objects` map.
  */
@@ -602,7 +633,8 @@ function computeFileLastTouch(objects, headOid, headCommit) {
           byPath.set(path, {
             author: chain[i].commit.author,
             message: chain[i].commit.message,
-            timestamp: chain[i].commit.timestamp
+            timestamp: chain[i].commit.timestamp,
+            commitOid: chain[i].oid
           })
           remaining.delete(path)
         }
@@ -610,7 +642,8 @@ function computeFileLastTouch(objects, headOid, headCommit) {
         byPath.set(path, {
           author: chain[i].commit.author,
           message: chain[i].commit.message,
-          timestamp: chain[i].commit.timestamp
+          timestamp: chain[i].commit.timestamp,
+          commitOid: chain[i].oid
         })
         remaining.delete(path)
       }
@@ -621,7 +654,10 @@ function computeFileLastTouch(objects, headOid, headCommit) {
 
   return {
     byPath,
-    oldest: chain[chain.length - 1].commit
+    oldest: {
+      ...chain[chain.length - 1].commit,
+      oid: chain[chain.length - 1].oid
+    }
   }
 }
 

@@ -435,6 +435,16 @@ test('push attributes each file to the commit that actually last touched it', as
   t.ok(bJs, 'src/b.js indexed')
   t.is(bJs.message, 'add b.js', 'src/b.js credited to the commit that added it')
   t.is(bJs.timestamp, 1700000200, 'src/b.js timestamp = C3')
+
+  for (const [path, oid] of [
+    ['/README.md', C1],
+    ['/src/a.js', C2],
+    ['/src/b.js', C3]
+  ]) {
+    const row = await remote._db.get('@gip/file-commits', { branch: 'main', path })
+    t.ok(row, path + ' has an attribution row')
+    t.is(row.commitOid, oid, path + ' attributed to the right commit oid')
+  }
 })
 
 test('push of identical tree leaves all file metadata untouched', async (t) => {
@@ -500,6 +510,15 @@ test('deleteBranch removes branch and files', async (t) => {
 
   const drive = await remote.toDrive('main')
   t.is(drive, null, 'drive returns null after delete')
+
+  const attributions = []
+  for await (const row of remote._db.find('@gip/file-commits', {
+    gte: { branch: 'main' },
+    lte: { branch: 'main' }
+  })) {
+    attributions.push(row)
+  }
+  t.is(attributions.length, 0, 'file attribution rows removed with the branch')
 })
 
 test('deleteBranch returns false for missing branch', async (t) => {

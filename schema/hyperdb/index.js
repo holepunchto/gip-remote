@@ -4,7 +4,7 @@
 const { IndexEncoder, c, b4a } = require('hyperdb/runtime')
 const { version, getEncoding, setVersion } = require('./messages.js')
 
-const versions = { schema: version, db: 4 }
+const versions = { schema: version, db: 5 }
 
 // '@gip/repos' collection key
 const collection0_key = new IndexEncoder([IndexEncoder.STRING], { prefix: 0 })
@@ -527,6 +527,82 @@ const collection7 = {
   decodedVersion: 0
 }
 
+// '@gip/file-commits' collection key
+const collection8_key = new IndexEncoder([IndexEncoder.STRING, IndexEncoder.STRING], { prefix: 8 })
+
+function collection8_indexify(record) {
+  const arr = []
+
+  const a0 = record.branch
+  if (a0 === undefined) return arr
+  arr.push(a0)
+
+  const a1 = record.path
+  if (a1 === undefined) return arr
+  arr.push(a1)
+
+  return arr
+}
+
+// '@gip/file-commits' value encoding
+const collection8_enc = getEncoding('@gip/file-commits/hyperdb#8')
+
+// '@gip/file-commits' reconstruction function
+function collection8_reconstruct(schemaVersion, keyBuf, valueBuf) {
+  const key = collection8_key.decode(keyBuf)
+  setVersion(schemaVersion)
+  const state = { start: 0, end: valueBuf.byteLength, buffer: valueBuf }
+  const type = c.uint.decode(state)
+  if (type !== 0) throw new Error('Unknown collection type: ' + type)
+  collection8.decodedVersion = c.uint.decode(state)
+  const record = collection8_enc.decode(state)
+  record.branch = key[0]
+  record.path = key[1]
+  return record
+}
+// '@gip/file-commits' key reconstruction function
+function collection8_reconstruct_key(keyBuf) {
+  const key = collection8_key.decode(keyBuf)
+  return {
+    branch: key[0],
+    path: key[1]
+  }
+}
+
+// '@gip/file-commits'
+const collection8 = {
+  name: '@gip/file-commits',
+  id: 8,
+  version: 5,
+  encodeKey(record) {
+    const key = [record.branch, record.path]
+    return collection8_key.encode(key)
+  },
+  encodeKeyRange({ gt, lt, gte, lte } = {}) {
+    return collection8_key.encodeRange({
+      gt: gt ? collection8_indexify(gt) : null,
+      lt: lt ? collection8_indexify(lt) : null,
+      gte: gte ? collection8_indexify(gte) : null,
+      lte: lte ? collection8_indexify(lte) : null
+    })
+  },
+  encodeValue(schemaVersion, collectionVersion, record) {
+    setVersion(schemaVersion)
+    const state = { start: 0, end: 2, buffer: null }
+    collection8_enc.preencode(state, record)
+    state.buffer = b4a.allocUnsafe(state.end)
+    state.buffer[state.start++] = 0
+    state.buffer[state.start++] = collectionVersion
+    collection8_enc.encode(state, record)
+    return state.buffer
+  },
+  trigger: null,
+  reconstruct: collection8_reconstruct,
+  reconstructKey: collection8_reconstruct_key,
+  indexes: [],
+  decodedVersion: 0
+}
+
 const collections = [
   collection0,
   collection1,
@@ -534,7 +610,8 @@ const collections = [
   collection3,
   collection5,
   collection6,
-  collection7
+  collection7,
+  collection8
 ]
 
 const indexes = [index4]
@@ -557,6 +634,8 @@ function resolveCollection(name) {
       return collection6
     case '@gip/object-chunks':
       return collection7
+    case '@gip/file-commits':
+      return collection8
     default:
       return null
   }
