@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "offset": 0,
   "schema": [
     {
@@ -102,6 +102,19 @@
       "schema": "@gip/object-chunks",
       "derived": false,
       "key": ["oid", "index"],
+      "trigger": null
+    },
+    {
+      "name": "file-commits",
+      "namespace": "gip",
+      "id": 8,
+      "type": 1,
+      "version": 5,
+      "versionField": null,
+      "indexes": [],
+      "schema": "@gip/file-commits",
+      "derived": false,
+      "key": ["branch", "path"],
       "trigger": null
     }
   ]
