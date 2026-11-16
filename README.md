@@ -8,6 +8,30 @@ Git objects are stored raw, and rebuilt to file when needed. Built for the [Git+
 npm install gip-remote
 ```
 
+## Links
+
+A `git+pear://` link addresses a repository. It uses the [Pear Link Format](https://github.com/holepunchto/pear-link) grammar and parser:
+
+```
+git+pear://[<fork>.<length>.]<key><path>[?<search>][#<hash>]
+```
+
+`<key>` is the repository's public key, z32 encoded. Keys are generated locally and resolve on the DHT, so the same link works from any machine. `<path>` is the repository name:
+
+```
+git+pear://z17anrqrtwgjxpig3oiohoxr7m9eijz3acpytiay6xku8pdh68by/my-repo
+```
+
+`<fork>.<length>` pins a version — an immutable position in the append-only log, where `fork` is truncation count and `length` append count. A branch can be force-pushed and a tag removed; a versioned link always resolves to the same bytes:
+
+```
+git+pear://0.42.z17anrqrtwgjxpig3oiohoxr7m9eijz3acpytiay6xku8pdh68by/my-repo
+```
+
+Omit `<fork>.<length>` to follow latest.
+
+`Remote` accepts a link string directly, and `remote.url` returns the current versioned link.
+
 ## Usage
 
 ```js
@@ -100,6 +124,10 @@ Create a new remote.
 
 Public key of the underlying Hypercore.
 
+#### `remote.url`
+
+Versioned `git+pear://` link for the remote at its current length.
+
 #### `remote.discoveryKey`
 
 Discovery key used for swarming.
@@ -127,6 +155,40 @@ Get a single object by OID.
 #### `const drive = await remote.toDrive(branch)`
 
 Returns a `RemoteDrive` or `null` if the branch doesn't exist. The drive is compatible with `mirror-drive`.
+
+#### `GitPearLink.parse(link)`
+
+Parse a `git+pear://` link. Returns:
+
+```js
+{
+  protocol: 'git+pear:',
+  origin: 'git+pear://<key>',
+  pathname: '/my-repo',
+  search: '',
+  hash: '',
+  drive: { key: Buffer, length: 42, fork: 0, hash: null }
+}
+```
+
+Unversioned links give `length: -1` and `fork: null`. Throws on an invalid key. Any other protocol falls through to `pear-link`.
+
+#### `GitPearLink.serialize(parsed)`
+
+Serialize a parsed link back to a string.
+
+```js
+GitPearLink.serialize({
+  protocol: 'git+pear:',
+  pathname: '/my-repo',
+  origin: GitPearLink.normalize(`git+pear://${z32.encode(key)}/my-repo`),
+  drive: { key, length: 42, fork: 0 }
+}) // git+pear://0.42.<key>/my-repo
+```
+
+#### `GitPearLink.normalize(link)`
+
+Canonical string form of a link, as used for `origin`. Inherited from `pear-link`.
 
 #### `await toDisk(opts)`
 
