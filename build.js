@@ -50,6 +50,19 @@ const DB_DIR = 'schema/hyperdb'
     ]
   })
 
+  // Commit attribution for files rows — which commit last changed each path.
+  // Lives beside `files` rather than on it: that struct is compact, and
+  // compact structs can't grow fields.
+  ns.register({
+    name: 'file-commits',
+    compact: true,
+    fields: [
+      { name: 'branch', type: 'string', required: true },
+      { name: 'path', type: 'string', required: true },
+      { name: 'commitOid', type: 'string', required: true }
+    ]
+  })
+
   // Tags: annotated and lightweight tags
   ns.register({
     name: 'tags',
@@ -131,6 +144,12 @@ const DB_DIR = 'schema/hyperdb'
   ns.collections.register({
     name: 'files',
     schema: '@gip/files',
+    key: ['branch', 'path']
+  })
+
+  ns.collections.register({
+    name: 'file-commits',
+    schema: '@gip/file-commits',
     key: ['branch', 'path']
   })
 

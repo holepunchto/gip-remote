@@ -1,6 +1,6 @@
 {
   "name": "gip-remote",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "Git+Pear remote DB for handling git data",
   "main": "index.js",
   "scripts": {
