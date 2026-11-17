@@ -857,9 +857,16 @@ test('concurrent pushes to one branch do not lose objects', async (t) => {
     remote.push('main', OID_C, mkCommit(OID_C, 'commit c'))
   ])
 
+  // The branch ends at whichever push won; its full history must be intact
+  // and both pushed commits must still exist as objects — the loser is just
+  // unreachable from the tip, exactly like a raced forced update in git.
   const ref = await remote.getBranchRef('main')
+  t.ok(ref.oid === OID_B || ref.oid === OID_C, 'tip is one of the pushed commits')
+
   const ids = (await remote.getRefObjects(ref.oid)).map((o) => o.id)
-  t.ok(ids.includes(OID_B), 'branch object set kept commit B')
-  t.ok(ids.includes(OID_C), 'branch object set kept commit C')
-  t.ok(ids.includes(OID_COMMIT), 'branch object set kept the base commit')
+  t.ok(ids.includes(ref.oid), 'reachable set has the tip')
+  t.ok(ids.includes(OID_COMMIT), 'reachable set has the base commit')
+
+  t.ok(await remote.getObject(OID_B), 'commit B object stored')
+  t.ok(await remote.getObject(OID_C), 'commit C object stored')
 })

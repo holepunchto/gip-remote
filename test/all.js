@@ -8,10 +8,12 @@ async function runTests() {
   test.pause()
 
   await import('./basic.js')
+  await import('./compression.js')
   await import('./drive.js')
   await import('./large-objects.js')
   await import('./link.js')
   await import('./replicate.js')
+  await import('./tags.js')
   await import('./to-disk.js')
 
   test.resume()
