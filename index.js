@@ -633,12 +633,7 @@ class Remote extends ReadyResource {
       if (onLoad) onLoad(obj.size)
       results.push({ ...obj, data, id: cur })
 
-      if (obj.type === 'tag') {
-        const tag = parseTag(data)
-        if (tag.object) stack.push(tag.object)
-      } else {
-        for (const link of objectLinks({ type: obj.type, data })) stack.push(link)
-      }
+      for (const link of objectLinks({ type: obj.type, data })) stack.push(link)
     }
 
     return results
