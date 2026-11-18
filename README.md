@@ -69,7 +69,7 @@ await mirror.done()
 
 ### toDisk
 
-Write git objects directly to a `.git` directory on disk.
+Write git objects directly into a git dir on disk.
 
 ```js
 const { toDisk } = require('gip-remote/lib/git')
@@ -104,35 +104,67 @@ Public key of the underlying Hypercore.
 
 Discovery key used for swarming.
 
-#### `await remote.push(branch, commitOid, objects)`
+#### `await remote.pushRef(ref, oid, objects, [opts])`
 
-Push a commit. `objects` is a `Map<oid, { type, size, data }>`.
+Store `objects` and point `ref` at `oid`, in one transaction. `ref` is a full ref name, `refs/heads/<name>` or `refs/tags/<name>`. A branch must point at a commit, a tag may point at any object.
+
+`objects` is a `Map<oid, { type, size, data }>`, or an iterable or async iterable of `{ oid, type, size, data }`. It only needs to hold what the remote doesn't have yet.
+
+- `opts.expect` - `null`: the ref must not exist yet. An oid: the ref must currently be at it. Left out: no check.
+
+Rejects with an error whose `code` is:
+
+- `STALE_REF` - the ref is not where `opts.expect` says (`err.expected`, `err.actual`)
+- `UNSUPPORTED_REF` - the ref is outside `refs/heads/` and `refs/tags/`
+- `MISSING_OBJECTS` - an object the push brings links to something that is neither in the push nor in the store (`err.missing`), as a push from a shallow clone does
+
+The first branch pushed becomes the head. Until the remote is closed, a push of `main`, else `master`, takes the head over from it. A head set with `setHead` stays.
+
+#### `await remote.push(name, oid, objects, [opts])`
+
+`pushRef` by short name: `name` is a branch name, or `tags/<name>` for a tag.
+
+#### `const deleted = await remote.deleteRef(ref, [opts])`
+
+Delete a branch or tag by full ref name. `opts.expect` as in `pushRef`. Rejects with code `DELETE_HEAD` for the head branch.
+
+#### `await remote.deleteBranch(name)` / `await remote.deleteTag(name)`
+
+Delete by short name, the head branch included.
+
+#### `await remote.getHead()` / `await remote.setHead(branch)`
+
+The branch `HEAD` points at.
 
 #### `await remote.getAllRefs()`
 
-Returns an array of `{ ref, oid }`.
+Returns an array of `{ ref, oid }`. `HEAD` also has `symref`, and an annotated tag has `peeled`, the oid of the object it finally points at.
 
 #### `await remote.getBranchRef(branch)`
 
 Returns `{ ref, oid }` or `null`.
 
-#### `await remote.getRefObjects(commitOid)`
+#### `await remote.getRefObjects(oid, [onLoad], [opts])`
 
-Returns all stored objects for a commit.
+Returns every object reachable from `oid`, which must be the tip of a ref.
+
+- `opts.seen` - a `Set` shared across calls: objects in it are left out, and the ones returned are added
 
 #### `await remote.getObject(oid)`
 
 Get a single object by OID.
 
-#### `const drive = await remote.toDrive(branch)`
+#### `const drive = await remote.toDrive(name)`
 
-Returns a `RemoteDrive` or `null` if the branch doesn't exist. The drive is compatible with `mirror-drive`.
+Returns a drive compatible with `mirror-drive`. `name` is a full ref name, or a short one: the branch of that name, else the tag. `null` if there is no such ref, or it is a tag of something other than a commit.
+
+Tree entries whose name is not safe as a path (`.git`, `..`, names with a slash or backslash) are stored and fetched like any other, but left out of the drive.
 
 #### `await toDisk(opts)`
 
-Write git objects to a `.git` directory.
+Write git objects into a git dir. Each file is written under a temporary name and renamed into place. Fewer than 100 objects are written loose, more as one pack.
 
-- `opts.gitDir` - path to the `.git` directory (required)
+- `opts.gitDir` - the git dir itself (required): `repo/.git`, a bare repository, a linked worktree's git dir, or a `.git` file pointing at one
 - `opts.objects` - array of `{ type, id, size, data }` (required)
 - `opts.refs` - object mapping ref names to OIDs, e.g. `{ 'refs/heads/main': commitOid }`
 - `opts.head` - branch name to set HEAD to, e.g. `'main'`

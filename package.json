@@ -84,7 +84,7 @@
     "bare-fs": "^4.7.4",
     "bare-path": "^3.1.1",
     "bare-zlib": "^1.4.1",
-    "hyperbee2": "^2.10.3",
+    "hyperbee2": "^2.22.0",
     "hyperdb": "^6.7.0",
     "mirror-drive": "^1.14.2",
     "pear-link": "^5.0.0",
