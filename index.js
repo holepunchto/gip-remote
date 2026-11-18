@@ -7,7 +7,7 @@ const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
 const { parseCommit, parseTag, walkTree, objectLinks } = require('./lib/git')
-const { getObject, putObject } = require('./lib/objects')
+const { getObject, deflateObject, putObject } = require('./lib/objects')
 const { TreeDrive } = RemoteDrive
 
 const BATCH = 256
@@ -307,11 +307,12 @@ class Remote extends ReadyResource {
     // too) and runs in batches instead of one awaited round-trip per object.
     const put = async (batch) => {
       const existing = await Promise.all(batch.map(([oid]) => this._has(tx, oid)))
+      const deflated = batch.map(([, obj], i) => (existing[i] ? null : deflateObject(obj)))
       for (let i = 0; i < batch.length; i++) {
         const [oid, obj] = batch[i]
         stored.push(oid)
         if (existing[i]) continue
-        await putObject(tx, oid, obj)
+        await putObject(tx, oid, deflated[i])
         fresh.add(oid)
         for (const link of objectLinks(obj)) links.add(link)
       }
