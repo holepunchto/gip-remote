@@ -1,7 +1,7 @@
 const test = require('brittle')
 const tmp = require('test-tmp')
 const { spawnSync } = require('child_process')
-const { existsSync, readFileSync, readdirSync, mkdirSync } = require('fs')
+const { existsSync, readFileSync, readdirSync, mkdirSync, promises: fsp } = require('fs')
 const { join } = require('path')
 const crypto = require('bare-crypto')
 const b4a = require('b4a')
@@ -493,4 +493,54 @@ test('toDisk writes an object that comes in chunks without joining it', async (t
   const wrong = [{ id: 'deadbeef'.repeat(5), type: 'blob', size: blob.size, chunks: chunks(65536) }]
   await t.exception(toDisk({ gitDir: bare, objects: wrong }), /OID mismatch/)
   t.alike(leftovers(bare), [], 'a bad object leaves nothing behind')
+})
+
+test('a pack and its index are whole before they are named, the index last', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+  const { commit, objects } = history(500)
+
+  // Every rename, with what the files it names held at that moment
+  const renames = []
+  const fs = {
+    ...fsp,
+    async rename(from, to) {
+      const pack = to.replace(/\.idx$/, '.pack')
+      renames.push({
+        to: to.slice(to.lastIndexOf('.')),
+        size: readFileSync(from).byteLength,
+        packNamed: existsSync(pack),
+        open: readdirSync(join(bare, 'objects', 'pack')).filter((f) => f.startsWith('tmp_')).length
+      })
+      await fsp.rename(from, to)
+    }
+  }
+
+  async function* stream() {
+    yield* objects
+  }
+  await toDisk({ gitDir: bare, objects: stream(), fs })
+
+  t.alike(
+    renames.map((r) => r.to),
+    ['.pack', '.idx'],
+    'the pack is named first, the index last'
+  )
+  t.is(renames[0].open, 2, 'the index is already written when the pack is named')
+  t.ok(renames[1].packNamed, 'the pack has its name when the index gets one')
+
+  // what a process killed right now leaves behind
+  const packDir = join(bare, 'objects', 'pack')
+  const files = readdirSync(packDir).sort()
+  t.is(files.length, 2)
+  t.ok(files[0].endsWith('.idx') && files[1].endsWith('.pack'))
+  t.is(readFileSync(join(packDir, files[0])).byteLength, renames[1].size, 'index complete')
+  t.is(readFileSync(join(packDir, files[1])).byteLength, renames[0].size, 'pack complete')
+
+  const verify = spawnSync('git', ['verify-pack', '-v', join(packDir, files[0])])
+  t.is(verify.status, 0, verify.stderr.toString())
+  const full = spawnSync('git', ['--git-dir', bare, 'fsck', '--strict', '--full', '--no-dangling'])
+  t.is(full.status, 0, full.stderr.toString())
+  t.is(gitExec(['--git-dir', bare, 'cat-file', '-t', commit.oid]).trim(), 'commit')
 })
