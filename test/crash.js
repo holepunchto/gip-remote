@@ -56,6 +56,9 @@ async function crashes(t, seed, stats) {
     for (let i = start; i <= done; i++) expect(model, universe, script[i])
     const next = model.clone()
     if (started > done) expect(next, universe, script[started])
+    // the next round is a new process
+    model.reopen()
+    next.reopen()
 
     if (signal) stats.kills++
     if (started > done) stats.midOp++

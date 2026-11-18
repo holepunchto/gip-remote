@@ -2,7 +2,6 @@ const test = require('brittle')
 const b4a = require('b4a')
 const { createStore } = require('./helpers')
 const git = require('./helpers/git')
-const { bug } = require('./helpers/fuzz')
 const { Remote } = require('..')
 
 test('a branch and a tag of the same name are independent refs', async (t) => {
@@ -28,7 +27,7 @@ test('a branch and a tag of the same name are independent refs', async (t) => {
   t.alike(await paths(await remote.toDrive('x')), ['/two.txt'], 'tag files survive')
 })
 
-bug('BUG: toDrive cannot reach a tag that shares its name with a branch', async (t) => {
+test('toDrive reaches a tag that shares its name with a branch', async (t) => {
   const remote = await create(t)
   const one = repo('one')
   const two = repo('two')
@@ -36,24 +35,33 @@ bug('BUG: toDrive cannot reach a tag that shares its name with a branch', async 
   await remote.push('x', one.commit.oid, one.objects)
   await remote.push('tags/x', two.commit.oid, two.objects)
 
-  t.alike(await paths(await remote.toDrive('x')), ['/one.txt'])
+  t.alike(await paths(await remote.toDrive('x')), ['/one.txt'], 'a bare name is the branch')
+  t.alike(await paths(await remote.toDrive('refs/heads/x')), ['/one.txt'])
+  t.alike(await paths(await remote.toDrive('refs/tags/x')), ['/two.txt'])
   t.alike(await paths(await remote.toDrive('tags/x')), ['/two.txt'])
+  t.is(await remote.toDrive('refs/tags/nope'), null)
+  t.is(await remote.toDrive('refs/heads/nope'), null)
 })
 
-bug('BUG: a branch named tags/x is stored as the tag x', async (t) => {
+test('a branch named tags/x and the tag x are independent refs', async (t) => {
   const remote = await create(t)
   const one = repo('one')
   const two = repo('two')
 
-  // refs/tags/x, then refs/heads/tags/x the way the transport names them
-  await remote.push('tags/x', one.commit.oid, one.objects)
-  await remote.push('tags/x', two.commit.oid, two.objects)
+  await remote.pushRef('refs/tags/x', one.commit.oid, one.objects)
+  await remote.pushRef('refs/heads/tags/x', two.commit.oid, two.objects)
 
   t.alike(await refs(remote), {
     HEAD: two.commit.oid,
     'refs/heads/tags/x': two.commit.oid,
     'refs/tags/x': one.commit.oid
   })
+  t.alike(await paths(await remote.toDrive('refs/heads/tags/x')), ['/two.txt'])
+  t.alike(await paths(await remote.toDrive('refs/tags/x')), ['/one.txt'])
+
+  t.ok(await remote.deleteRef('refs/tags/x'))
+  t.alike(await paths(await remote.toDrive('refs/heads/tags/x')), ['/two.txt'], 'branch files stay')
+  t.alike(await refs(remote), { HEAD: two.commit.oid, 'refs/heads/tags/x': two.commit.oid })
 })
 
 test('a full ref name pushed as a branch stays a branch of that name', async (t) => {

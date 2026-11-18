@@ -6,9 +6,11 @@ const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
-const { parseCommit, parseTag, walkTree, treeEntries } = require('./lib/git')
+const { parseCommit, parseTag, walkTree, objectLinks } = require('./lib/git')
 const { getObject, putObject } = require('./lib/objects')
 const { TreeDrive } = RemoteDrive
+
+const BATCH = 256
 
 class Remote extends ReadyResource {
   _db = null
@@ -20,6 +22,11 @@ class Remote extends ReadyResource {
   // confirmation never goes stale. Saves re-checking the shared thin set on
   // every ref of a multi-ref push (git push --tags is one push() per tag).
   _storedOids = new Set()
+  // The branch this session made the head by default. While it stands, a
+  // push of main (else master) takes the head over from it.
+  _autoHead = null
+  // Ref tips by oid, rebuilt when the db moves: { length, tips }
+  _tipIndex = null
 
   constructor(store, link, opts = {}) {
     super()
@@ -67,17 +74,20 @@ class Remote extends ReadyResource {
   // Run `fn` against a writable snapshot, serialized behind the write lock.
   // Readers of the main instance never see partial state — everything lands
   // on flush, nothing on error.
-  async _transaction(fn) {
+  // `landed` runs once the write is durable, still behind the lock.
+  async _transaction(fn, landed) {
     return this._locked(async () => {
       const tx = this._db.transaction()
+      let result
       try {
-        const result = await fn(tx)
+        result = await fn(tx)
         await tx.flush()
-        return result
       } catch (err) {
         tx.close()
         throw err
       }
+      if (landed) landed(result)
+      return result
     })
   }
 
@@ -120,7 +130,10 @@ class Remote extends ReadyResource {
   }
 
   async setHead(branch) {
-    return this._transaction((tx) => tx.insert('@gip/head', { branch }))
+    return this._transaction(
+      (tx) => tx.insert('@gip/head', { branch }),
+      () => (this._autoHead = null)
+    )
   }
 
   async getAllRefs() {
@@ -133,7 +146,9 @@ class Remote extends ReadyResource {
 
     const tags = this._db.find('@gip/tags')
     for await (const t of tags) {
-      refs.push({ ref: `refs/tags/${t.name}`, oid: t.oid })
+      const ref = { ref: `refs/tags/${t.name}`, oid: t.oid }
+      if (t.commitOid !== t.oid) ref.peeled = t.commitOid
+      refs.push(ref)
     }
 
     const headBranch = await this.getHead()
@@ -184,8 +199,11 @@ class Remote extends ReadyResource {
 
     await tx.delete('@gip/tags', { name: tagName })
 
-    // Remove file records for this tag
+    // Tags pushed by older versions were file-indexed as the branch
+    // `tags/<name>`. A real branch of that name owns those rows.
     const filesBranch = 'tags/' + tagName
+    if (await tx.get('@gip/branches', { name: filesBranch })) return true
+
     const files = tx.find('@gip/files', {
       gte: { branch: filesBranch },
       lte: { branch: filesBranch }
@@ -198,15 +216,72 @@ class Remote extends ReadyResource {
     return true
   }
 
+  // Delete `refs/heads/<name>` or `refs/tags/<name>`. `opts.expect` as in
+  // pushRef. The head branch can't be deleted this way (DELETE_HEAD).
+  async deleteRef(ref, opts = {}) {
+    const target = parseRef(ref)
+
+    return this._transaction(async (tx) => {
+      await this._expect(tx, target, opts.expect)
+      if (target.tag) return this._deleteTag(tx, target.name)
+
+      const head = await tx.get('@gip/head', {})
+      if (head && head.branch === target.name && (await this._tip(tx, target)) !== null) {
+        throw error('DELETE_HEAD', 'Refusing to delete the head branch: ' + ref)
+      }
+      return this._deleteBranch(tx, target.name)
+    })
+  }
+
+  async _tip(tx, target) {
+    if (target.tag) {
+      const tag = await tx.get('@gip/tags', { name: target.name })
+      return tag ? tag.oid : null
+    }
+    const branch = await tx.get('@gip/branches', { name: target.name })
+    return branch ? branch.commitOid : null
+  }
+
+  // expect: undefined = no check, null = the ref must not exist, an oid = the
+  // ref must be at it. Runs inside the transaction that then writes the ref.
+  async _expect(tx, target, expect) {
+    if (expect === undefined) return
+    const tip = await this._tip(tx, target)
+    if (tip !== expect) {
+      throw error('STALE_REF', `Stale ref: expected ${expect}, found ${tip}`, {
+        expected: expect,
+        actual: tip
+      })
+    }
+  }
+
   // --- Push: store objects + index branch/tag + files ---
 
-  // `objects` may be a thin set — just the objects the remote doesn't have
-  // yet. Anything else needed for indexing (the tip on a no-op push,
-  // unchanged sub-trees) is pulled from the store on demand.
-  async push(refName, oid, objects) {
+  // `name` is a branch name, or `tags/<name>` for a tag.
+  async push(name, oid, objects, opts) {
+    const ref = name.startsWith('tags/') ? 'refs/' + name : 'refs/heads/' + name
+    return this.pushRef(ref, oid, objects, opts)
+  }
+
+  // Point `ref` (`refs/heads/<name>` or `refs/tags/<name>`) at `oid`.
+  //
+  // `objects` is a Map of oid → { type, size, data }, or an iterable or async
+  // iterable of { oid, type, size, data }. It may be a thin set — just the
+  // objects the remote doesn't have yet. Anything else needed for indexing
+  // (the tip on a no-op push, unchanged sub-trees) is pulled from the store
+  // on demand. Whatever a new object links to must be in the set or in the
+  // store, or the push is rejected (MISSING_OBJECTS).
+  async pushRef(ref, oid, objects, opts = {}) {
+    const target = parseRef(ref)
     const stored = []
-    await this._transaction((tx) => this._push(tx, refName, oid, objects, stored))
-    for (const o of stored) this._storedOids.add(o)
+
+    await this._transaction(
+      (tx) => this._push(tx, target, oid, objects, opts, stored),
+      (head) => {
+        for (const o of stored) this._storedOids.add(o)
+        if (head) this._autoHead = head
+      }
+    )
   }
 
   // Look an object up in the pushed set first, then in the store — thin
@@ -215,30 +290,75 @@ class Remote extends ReadyResource {
     const obj = objects.get(oid)
     if (obj) return obj
     const stored = await getObject(tx, oid)
-    if (stored) objects.set(oid, stored)
+    if (stored) objects.resolved.set(oid, stored)
     return stored
   }
 
-  async _push(tx, refName, oid, objects, stored) {
-    // 1. Store all git objects the remote doesn't already have. The presence
-    // check is cheap (the stub row exists for chunked objects too) and runs
-    // in batches instead of one awaited round-trip per object.
-    const oids = [...objects.keys()].filter((objOid) => !this._storedOids.has(objOid))
-    for (let i = 0; i < oids.length; i += 256) {
-      const batch = oids.slice(i, i + 256)
-      const existing = await Promise.all(
-        batch.map((objOid) => tx.get('@gip/objects', { oid: objOid }))
-      )
-      for (let j = 0; j < batch.length; j++) {
-        if (!existing[j]) await putObject(tx, batch[j], objects.get(batch[j]))
-        stored.push(batch[j])
+  // Store what the remote doesn't have yet, and return the pushed set as a
+  // lookup. An iterable is consumed as it comes: blobs go straight to the
+  // store and only their size is kept.
+  async _store(tx, source, stored) {
+    const pushed = source instanceof Map ? source : new Map()
+    const resolved = new Map()
+    const fresh = new Set()
+    const links = new Set()
+
+    // The presence check is cheap (the stub row exists for chunked objects
+    // too) and runs in batches instead of one awaited round-trip per object.
+    const put = async (batch) => {
+      const existing = await Promise.all(batch.map(([oid]) => this._has(tx, oid)))
+      for (let i = 0; i < batch.length; i++) {
+        const [oid, obj] = batch[i]
+        stored.push(oid)
+        if (existing[i]) continue
+        await putObject(tx, oid, obj)
+        fresh.add(oid)
+        for (const link of objectLinks(obj)) links.add(link)
       }
     }
 
-    // 2. Dereference tag objects to find the commit
+    const batch = []
+    if (source instanceof Map) {
+      for (const entry of source) {
+        if (batch.push(entry) === BATCH) await put(batch.splice(0))
+      }
+    } else {
+      for await (const obj of source) {
+        pushed.set(obj.oid, obj.type === 'blob' ? { type: obj.type, size: obj.size } : obj)
+        if (batch.push([obj.oid, obj]) === BATCH) await put(batch.splice(0))
+      }
+    }
+    await put(batch)
+
+    // Connectivity: every object stored so far has its links in the store,
+    // so only the new ones need checking, and only one level deep.
+    const boundary = []
+    for (const oid of links) if (!fresh.has(oid)) boundary.push(oid)
+    const missing = []
+    for (let i = 0; i < boundary.length; i += BATCH) {
+      const slice = boundary.slice(i, i + BATCH)
+      const existing = await Promise.all(slice.map((oid) => this._has(tx, oid)))
+      for (let j = 0; j < slice.length; j++) if (!existing[j]) missing.push(slice[j])
+    }
+    if (missing.length > 0) throw missingObjects(missing)
+
+    return { resolved, get: (oid) => pushed.get(oid) ?? resolved.get(oid) }
+  }
+
+  async _has(tx, oid) {
+    return this._storedOids.has(oid) || (await tx.get('@gip/objects', { oid })) !== null
+  }
+
+  async _push(tx, target, oid, source, opts, stored) {
+    await this._expect(tx, target, opts.expect)
+
+    // 1. Store all git objects the remote doesn't already have.
+    const objects = await this._store(tx, source, stored)
+
+    // 2. Dereference tag objects to find what the ref peels to
     let resolvedOid = oid
     let obj = await this._resolveObject(tx, objects, resolvedOid)
-    if (!obj) throw new Error('Object not found: ' + resolvedOid)
+    if (!obj) throw missingObjects([resolvedOid])
 
     let tagMeta = null
     while (obj.type === 'tag') {
@@ -247,26 +367,23 @@ class Remote extends ReadyResource {
       if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
       resolvedOid = tag.object
       obj = await this._resolveObject(tx, objects, resolvedOid)
-      if (!obj) throw new Error('Object not found: ' + resolvedOid)
+      if (!obj) throw missingObjects([resolvedOid])
     }
 
-    if (obj.type !== 'commit') {
-      throw new Error('Expected commit, got ' + obj.type + ': ' + resolvedOid)
-    }
-
-    const commit = parseCommit(obj.data)
-    if (!commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
+    const commit = obj.type === 'commit' ? parseCommit(obj.data) : null
+    if (commit && !commit.tree) throw new Error('Commit has no tree: ' + resolvedOid)
 
     // Tags stop here: no denormalized object list (getRefObjects walks the
     // graph) and no file index — their trees are immutable and toDrive
     // serves them lazily from the tree objects. Indexing every tag's full
-    // tree made pushing a release history O(tags × files).
-    if (refName.startsWith('tags/')) {
+    // tree made pushing a release history O(tags × files). A tag may point
+    // at any object; one that isn't a commit has no tree, and no drive view.
+    if (target.tag) {
       await tx.insert('@gip/tags', {
-        name: refName.slice(5),
+        name: target.name,
         oid,
         commitOid: resolvedOid,
-        treeOid: commit.tree,
+        treeOid: commit ? commit.tree : '',
         tagger: tagMeta ? tagMeta.tagger : null,
         message: tagMeta ? tagMeta.message : null,
         timestamp: tagMeta ? tagMeta.timestamp : 0,
@@ -274,6 +391,12 @@ class Remote extends ReadyResource {
       })
       return
     }
+
+    if (!commit) {
+      throw new Error('Expected commit, got ' + obj.type + ': ' + resolvedOid)
+    }
+
+    const refName = target.name
 
     // 3. Walk tree to enumerate files. A thin push doesn't re-send unchanged
     // sub-trees, so pull whatever the walk couldn't expand from the store
@@ -386,12 +509,20 @@ class Remote extends ReadyResource {
         continue
       }
 
+      // A thin push doesn't carry blobs the remote has: their size is in
+      // the store. Submodule commits are in neither.
+      let size = file.size
+      if (file.mode !== '160000' && !objects.get(file.oid)) {
+        const blob = await tx.get('@gip/objects', { oid: file.oid })
+        if (blob) size = blob.size
+      }
+
       await tx.insert('@gip/files', {
         branch: refName,
         path: file.path,
         oid: file.oid,
         mode: file.mode,
-        size: file.size,
+        size,
         author: meta.author,
         message: meta.message,
         timestamp: meta.timestamp
@@ -417,11 +548,38 @@ class Remote extends ReadyResource {
       objects: []
     })
 
-    // 6. Set HEAD to first branch pushed (like git init)
-    const currentHead = await tx.get('@gip/head', {})
-    if (!currentHead) {
-      await tx.insert('@gip/head', { branch: refName })
+    // 6. Default the head: the first branch pushed, until main (else master)
+    // arrives in the same session. A head set with setHead is never moved.
+    const head = await tx.get('@gip/head', {})
+    const takesOver =
+      head && head.branch === this._autoHead && headRank(refName) < headRank(head.branch)
+    if (head && !takesOver) return
+
+    await tx.insert('@gip/head', { branch: refName })
+    return refName
+  }
+
+  // Ref tips by oid, so a fetch of many refs doesn't scan them per ref. The
+  // scans always run to the end: destroying a hyperdb stream early kills the
+  // requests of every other read on the db.
+  async _tips() {
+    const length = this._db.core.length
+    if (this._tipIndex && this._tipIndex.length === length) return this._tipIndex.tips
+
+    const tips = new Map()
+    for await (const t of this._db.find('@gip/tags')) {
+      tips.set(t.oid, { collection: '@gip/tags', name: t.name, legacy: t.objects.length > 0 })
     }
+    for await (const b of this._db.find('@gip/branches')) {
+      tips.set(b.commitOid, {
+        collection: '@gip/branches',
+        name: b.name,
+        legacy: b.objects.length > 0
+      })
+    }
+
+    this._tipIndex = { length, tips }
+    return tips
   }
 
   // --- Fetch support ---
@@ -430,35 +588,17 @@ class Remote extends ReadyResource {
   // pulls every branch and tag) walks shared history once; objects already
   // seen are omitted from the result, the caller has them.
   async getRefObjects(oid, onLoad, opts = {}) {
-    let record = null
+    const tip = (await this._tips()).get(oid)
+    if (!tip) return []
 
-    // Check branches first
-    const branches = this._db.find('@gip/branches')
-    for await (const b of branches) {
-      if (b.commitOid === oid) {
-        record = b
-        break
-      }
-    }
-
-    // Then check tags
-    if (!record) {
-      const tags = this._db.find('@gip/tags')
-      for await (const t of tags) {
-        if (t.oid === oid) {
-          record = t
-          break
-        }
-      }
-    }
-
-    if (!record) return []
+    // Only records written by older versions need reading in full
+    const record = tip.legacy ? await this._db.get(tip.collection, { name: tip.name }) : null
 
     const seen = opts.seen ?? new Set()
 
     // Records written by older versions carry the denormalized reachable
     // set — serve it directly.
-    if (record.objects && record.objects.length > 0) {
+    if (record && record.objects.length > 0) {
       const results = []
       for (const objOid of record.objects) {
         if (seen.has(objOid)) continue
@@ -496,12 +636,8 @@ class Remote extends ReadyResource {
       if (obj.type === 'tag') {
         const tag = parseTag(data)
         if (tag.object) stack.push(tag.object)
-      } else if (obj.type === 'commit') {
-        const commit = parseCommit(data)
-        if (commit.tree) stack.push(commit.tree)
-        for (const parent of commit.parents) stack.push(parent)
-      } else if (obj.type === 'tree') {
-        for (const entry of treeEntries(data)) stack.push(entry.oid)
+      } else {
+        for (const link of objectLinks({ type: obj.type, data })) stack.push(link)
       }
     }
 
@@ -510,20 +646,33 @@ class Remote extends ReadyResource {
 
   // --- Drive ---
 
-  async toDrive(branch) {
-    // Check branches first, then tags
-    const b = await this._db.get('@gip/branches', { name: branch })
-    if (!b) {
-      const t = await this._db.get('@gip/tags', { name: branch })
-      if (!t) return null
-      // Tags aren't file-indexed — serve the immutable tree lazily from the
-      // tree objects instead.
-      const drive = new TreeDrive(this._db, { treeOid: t.treeOid })
-      await drive.ready()
-      return drive
-    }
+  // `name` is a full ref name (`refs/heads/x`, `refs/tags/x`), or a bare
+  // name: the branch of that name, else the tag. Null when there is no such
+  // ref, or it is a tag of something that isn't a commit.
+  async toDrive(name) {
+    if (name.startsWith('refs/heads/')) return this._branchDrive(name.slice(11))
+    if (name.startsWith('refs/tags/')) return this._tagDrive(name.slice(10))
 
+    return (
+      (await this._branchDrive(name)) ||
+      (await this._tagDrive(name)) ||
+      (name.startsWith('tags/') ? this._tagDrive(name.slice(5)) : null)
+    )
+  }
+
+  async _branchDrive(branch) {
+    if (!(await this._db.get('@gip/branches', { name: branch }))) return null
     const drive = new RemoteDrive(this._db, { branch })
+    await drive.ready()
+    return drive
+  }
+
+  // Tags aren't file-indexed — serve the immutable tree lazily from the
+  // tree objects instead.
+  async _tagDrive(name) {
+    const tag = await this._db.get('@gip/tags', { name })
+    if (!tag || !tag.treeOid) return null
+    const drive = new TreeDrive(this._db, { treeOid: tag.treeOid })
     await drive.ready()
     return drive
   }
@@ -565,6 +714,29 @@ class Remote extends ReadyResource {
 
     await this._db.update()
   }
+}
+
+function error(code, message, props) {
+  const err = new Error(message)
+  err.code = code
+  return Object.assign(err, props)
+}
+
+function missingObjects(missing) {
+  const more = missing.length > 3 ? ` and ${missing.length - 3} more` : ''
+  return error('MISSING_OBJECTS', `Missing objects: ${missing.slice(0, 3).join(', ')}${more}`, {
+    missing
+  })
+}
+
+function parseRef(ref) {
+  if (ref.startsWith('refs/heads/') && ref.length > 11) return { tag: false, name: ref.slice(11) }
+  if (ref.startsWith('refs/tags/') && ref.length > 10) return { tag: true, name: ref.slice(10) }
+  throw error('UNSUPPORTED_REF', 'Unsupported ref namespace: ' + ref)
+}
+
+function headRank(branch) {
+  return branch === 'main' ? 0 : branch === 'master' ? 1 : 2
 }
 
 /**

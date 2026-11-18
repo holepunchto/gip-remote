@@ -1,11 +1,5 @@
 const test = require('brittle')
-const {
-  createRemote,
-  makeTestObjects,
-  OID_COMMIT,
-  OID_TREE_ROOT,
-  OID_TREE_SRC
-} = require('./helpers')
+const { createRemote, makeTestObjects, OID_COMMIT, OID_TREE_SRC } = require('./helpers')
 
 const OID_BLOB3 = '11'.repeat(20)
 const OID_TREE_ROOT2 = '22'.repeat(20)
@@ -25,9 +19,8 @@ test('compressible objects are deflated at rest and inflated on read', async (t)
 
   const data = Buffer.from('aaaaaaaaaa'.repeat(500))
   const oid = '12'.repeat(20)
-  const objects = new Map([[oid, { type: 'blob', size: data.length, data }]])
-  objects.set(OID_TREE_ROOT, makeTestObjects().get(OID_TREE_ROOT))
-  objects.set(OID_COMMIT, makeTestObjects().get(OID_COMMIT))
+  const objects = makeTestObjects()
+  objects.set(oid, { type: 'blob', size: data.length, data })
 
   await remote.push('main', OID_COMMIT, objects)
 

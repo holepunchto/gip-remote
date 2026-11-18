@@ -16,10 +16,12 @@ async function runTests() {
   await import('./link.js')
   await import('./model.js')
   await import('./namespaces.js')
+  await import('./refs.js')
   await import('./replicate.js')
   await import('./replicate-chaos.js')
   await import('./tags.js')
   await import('./to-disk.js')
+  await import('./trees.js')
 
   test.resume()
 }

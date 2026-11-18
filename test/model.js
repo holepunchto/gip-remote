@@ -6,7 +6,7 @@ const { join } = require('path')
 const { toDisk } = require('../lib/git')
 const { createStore } = require('./helpers')
 const git = require('./helpers/git')
-const { bug, generate, fuzz } = require('./helpers/fuzz')
+const { generate, fuzz } = require('./helpers/fuzz')
 const { Remote } = require('..')
 
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -45,7 +45,7 @@ if (env.GIP_FUZZ_ITERS) {
   }
 }
 
-bug('BUG: a thin push indexes files whose blob it did not carry with size 0', async (t) => {
+test('a thin push indexes the size of files whose blob it did not carry', async (t) => {
   const remote = await create(t)
   const blob = git.blob('hello')
   const tree = git.tree([{ mode: '100644', name: 'a.txt', oid: blob.oid }])
@@ -59,7 +59,7 @@ bug('BUG: a thin push indexes files whose blob it did not carry with size 0', as
   t.is((await drive.entry('/a.txt')).value.blob.byteLength, 5)
 })
 
-bug('BUG: list and readdir of a folder skip names starting beyond U+FFFF', async (t) => {
+test('list and readdir of a folder include names starting beyond U+FFFF', async (t) => {
   const remote = await create(t)
   const blob = git.blob('hello')
   const dir = git.tree([{ mode: '100644', name: '😀.txt', oid: blob.oid }])
@@ -77,19 +77,43 @@ bug('BUG: list and readdir of a folder skip names starting beyond U+FFFF', async
   t.alike(names, ['😀.txt'])
 })
 
-bug(
-  'BUG: push accepts a ref whose tree and blobs are in neither the push nor the store',
-  async (t) => {
-    const remote = await create(t)
-    const blob = git.blob('never sent')
-    const tree = git.tree([{ mode: '100644', name: 'a.txt', oid: blob.oid }])
-    const commit = git.commit({ tree: tree.oid })
+test('push rejects a ref whose tree and blobs are in neither the push nor the store', async (t) => {
+  const remote = await create(t)
+  const blob = git.blob('never sent')
+  const tree = git.tree([{ mode: '100644', name: 'a.txt', oid: blob.oid }])
+  const commit = git.commit({ tree: tree.oid })
 
-    await t.exception(remote.push('main', commit.oid, git.toObjects([commit])))
-    t.alike(await remote.getAllRefs(), [], 'no ref without its objects')
-    t.is(await remote.getObject(commit.oid), null, 'nothing stored')
-  }
-)
+  const err = await remote.push('main', commit.oid, git.toObjects([commit])).catch((err) => err)
+  t.is(err.code, 'MISSING_OBJECTS')
+  t.alike(err.missing, [tree.oid])
+  t.alike(await remote.getAllRefs(), [], 'no ref without its objects')
+  t.is(await remote.getObject(commit.oid), null, 'nothing stored')
+
+  await remote.push('main', commit.oid, git.toObjects([blob, tree, commit]))
+  t.is((await remote.getBranchRef('main')).oid, commit.oid, 'lands once complete')
+})
+
+test('push rejects a commit whose parent is missing, as from a shallow clone', async (t) => {
+  const remote = await create(t)
+  const tree = git.tree([])
+  const parent = git.commit({ tree: tree.oid, message: 'parent' })
+  const commit = git.commit({ tree: tree.oid, parents: [parent.oid] })
+
+  const err = await remote.push('main', commit.oid, git.toObjects([tree, commit])).catch((e) => e)
+  t.is(err.code, 'MISSING_OBJECTS')
+  t.alike(err.missing, [parent.oid])
+  t.alike(await remote.getAllRefs(), [])
+})
+
+test('a submodule commit is not part of the closure', async (t) => {
+  const remote = await create(t)
+  const tree = git.tree([{ mode: '160000', name: 'sub', oid: 'ab'.repeat(20) }])
+  const commit = git.commit({ tree: tree.oid })
+
+  await remote.push('main', commit.oid, git.toObjects([tree, commit]))
+  const objs = await remote.getRefObjects(commit.oid)
+  t.alike(objs.map((o) => o.id).sort(), [tree.oid, commit.oid].sort())
+})
 
 async function create(t) {
   const remote = new Remote(await createStore(t), 'bugs')

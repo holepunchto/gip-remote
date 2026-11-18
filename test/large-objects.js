@@ -47,6 +47,14 @@ function makeBigRepo() {
   return { objects, blob }
 }
 
+// The same commit over an empty tree, for tests that bring their own blobs
+function makeEmptyRepo() {
+  const { objects } = makeBigRepo()
+  objects.delete(OID_BIG_BLOB)
+  objects.set(OID_TREE, { type: 'tree', size: 0, data: Buffer.alloc(0) })
+  return objects
+}
+
 async function countChunks(remote, oid) {
   let n = 0
   for await (const _ of remote._db.find('@gip/object-chunks', { gte: { oid }, lte: { oid } })) n++
@@ -97,10 +105,8 @@ test('multiple large objects reassemble independently (no cross-oid bleed)', asy
   const objects = new Map()
   objects.set(OID_A, { type: 'blob', size: blobA.byteLength, data: blobA })
   objects.set(OID_B, { type: 'blob', size: blobB.byteLength, data: blobB })
-  // A commit so push has a ref to resolve; reuse the shared tree/commit shape.
-  const { objects: base } = makeBigRepo()
-  base.delete(OID_BIG_BLOB)
-  for (const [k, v] of base) objects.set(k, v)
+  // A commit so push has a ref to resolve
+  for (const [k, v] of makeEmptyRepo()) objects.set(k, v)
 
   await remote.push('main', OID_COMMIT, objects)
 
@@ -179,8 +185,7 @@ test('object exactly at the chunk threshold stays inline', async (t) => {
   const oid = '1a'.repeat(20)
   const data = Buffer.allocUnsafe(CHUNK_SIZE)
   data.fill(0x5a)
-  const objects = makeBigRepo().objects
-  objects.delete(OID_BIG_BLOB)
+  const objects = makeEmptyRepo()
   objects.set(oid, { type: 'blob', size: data.byteLength, data })
 
   await remote.push('main', OID_COMMIT, objects)
@@ -196,8 +201,7 @@ test('object one byte over the threshold is chunked', async (t) => {
   const oid = '2b'.repeat(20)
   const data = Buffer.allocUnsafe(CHUNK_SIZE + 1)
   data.fill(0x6b)
-  const objects = makeBigRepo().objects
-  objects.delete(OID_BIG_BLOB)
+  const objects = makeEmptyRepo()
   objects.set(oid, { type: 'blob', size: data.byteLength, data })
 
   await remote.push('main', OID_COMMIT, objects)
@@ -211,8 +215,7 @@ test('empty blob stays inline and round-trips', async (t) => {
   const remote = await createRemote(t, { name: 'empty-blob' })
 
   const oid = '3c'.repeat(20)
-  const objects = makeBigRepo().objects
-  objects.delete(OID_BIG_BLOB)
+  const objects = makeEmptyRepo()
   objects.set(oid, { type: 'blob', size: 0, data: Buffer.alloc(0) })
 
   await remote.push('main', OID_COMMIT, objects)

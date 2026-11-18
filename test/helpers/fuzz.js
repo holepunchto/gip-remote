@@ -1,20 +1,11 @@
-const test = require('brittle')
 const Corestore = require('corestore')
 const b4a = require('b4a')
-const env = require('bare-env')
 const tmp = require('test-tmp')
 const { join } = require('path')
 const { promises: fs } = require('fs')
 const { Remote } = require('../..')
 const Model = require('./model')
 const git = require('./git')
-
-// Known bugs the fuzz would otherwise trip over on every seed. Each is pinned
-// by a `bug` test, which is a todo until GIP_STRICT=1 stops tolerating them.
-const KNOWN = env.GIP_STRICT
-  ? {}
-  : { thinPushFileSize: true, astralFolderList: true, cancelledReads: true }
-const bug = env.GIP_STRICT ? test : test.todo
 
 const BRANCHES = [
   'main',
@@ -380,8 +371,6 @@ async function compareDrive(remote, model, name) {
   check(drive !== null, `${what} is null`)
 
   const size = (path) => model.objects.get(files.get(path)?.oid)?.size ?? 0
-  const indexed = model.branches.has(name)
-  const sizeUnreliable = KNOWN.thinPushFileSize && indexed
   const view = (prefix) => {
     const out = []
     for (const [path, file] of files) {
@@ -391,12 +380,7 @@ async function compareDrive(remote, model, name) {
   }
   const listed = async (folder) => {
     const entries = await collect(drive.list(folder))
-    return entries
-      .map(({ key, value }) => {
-        const byteLength = value.blob.byteLength
-        return [key, value.executable, sizeUnreliable && byteLength === 0 ? size(key) : byteLength]
-      })
-      .sort()
+    return entries.map(({ key, value }) => [key, value.executable, value.blob.byteLength]).sort()
   }
   const dirs = (prefix) => {
     const names = new Set()
@@ -434,27 +418,16 @@ async function compareDrive(remote, model, name) {
 
   for (const folder of folders) {
     const prefix = folder + '/'
-    const hidden = (path) =>
-      indexed && KNOWN.astralFolderList && path.codePointAt(prefix.length) > 0xffff
-    same(
-      await listed(folder),
-      view(prefix).filter(([path]) => !hidden(path)),
-      `${what} list(${folder})`
-    )
-    same(
-      (await collect(drive.readdir(folder))).sort(),
-      dirs(prefix).filter((name) => !hidden(prefix + name)),
-      `${what} readdir(${folder})`
-    )
+    same(await listed(folder), view(prefix), `${what} list(${folder})`)
+    same((await collect(drive.readdir(folder))).sort(), dirs(prefix), `${what} readdir(${folder})`)
   }
 
   check((await drive.get('/nope')) === null, `${what} get of a missing path must be null`)
   check((await drive.entry('/nope')) === null, `${what} entry of a missing path must be null`)
 }
 
-// Every public read of the Remote against the model. `opts.refObjects: false`
-// leaves getRefObjects out, for replicas it would break (KNOWN.cancelledReads).
-async function compare(remote, model, u, opts = {}) {
+// Every public read of the Remote against the model.
+async function compare(remote, model, u) {
   same(sortRefs(await remote.getAllRefs()), sortRefs(model.refs()), 'getAllRefs')
   same(await remote.getHead(), model.head, 'getHead')
 
@@ -476,7 +449,7 @@ async function compare(remote, model, u, opts = {}) {
     check(b4a.equals(bytes(got.data), obj.data), `${what} bytes differ`)
   }
 
-  for (const oid of opts.refObjects === false ? [] : model.tips()) {
+  for (const oid of model.tips()) {
     const objs = await remote.getRefObjects(oid)
     same(
       objs.map((o) => u.label(o.id)).sort(),
@@ -492,7 +465,11 @@ async function compare(remote, model, u, opts = {}) {
     }
   }
 
-  for (const name of new Set([...BRANCHES, ...TAGS])) await compareDrive(remote, model, name)
+  for (const name of new Set([...BRANCHES, ...TAGS])) {
+    await compareDrive(remote, model, name)
+    await compareDrive(remote, model, 'refs/heads/' + name)
+    await compareDrive(remote, model, 'refs/tags/' + name)
+  }
 }
 
 class Sut {
@@ -518,6 +495,7 @@ async function step(sut, model, u, op) {
   if (op.type === 'reopen') {
     await sut.close()
     await sut.open()
+    model.reopen()
   } else if (op.type === 'fetch') {
     await fetch(sut.remote, model, u, op)
   } else if (op.type === 'concurrent') {
@@ -597,4 +575,4 @@ async function fuzz(t, seed, opts) {
   return false
 }
 
-module.exports = { KNOWN, bug, prng, generate, describe, expect, apply, compare, fuzz, Sut }
+module.exports = { prng, generate, describe, expect, apply, compare, fuzz, Sut }

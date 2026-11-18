@@ -16,6 +16,7 @@ async function main() {
   })
   const model = new Model(universe.meta)
   for (let i = 0; i < Number(start); i++) expect(model, universe, script[i])
+  model.reopen()
 
   const sut = new Sut(dir)
   await sut.open()

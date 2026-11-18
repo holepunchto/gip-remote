@@ -5,7 +5,7 @@ const env = require('bare-env')
 const { createStore } = require('./helpers')
 const Model = require('./helpers/model')
 const git = require('./helpers/git')
-const { KNOWN, bug, prng, generate, apply, compare } = require('./helpers/fuzz')
+const { prng, generate, apply, compare } = require('./helpers/fuzz')
 const { Remote } = require('..')
 
 const iters = Number(env.GIP_FUZZ_ITERS || 1)
@@ -25,7 +25,7 @@ test(
   }
 )
 
-bug('BUG: getRefObjects on a replica cancels every later read', async (t) => {
+test('getRefObjects on a replica leaves later reads working', async (t) => {
   const { bootstrap } = await createTestnet(3, t.teardown)
   const writer = await createPeer(t, bootstrap, 'many-refs')
 
@@ -40,7 +40,6 @@ bug('BUG: getRefObjects on a replica cancels every later read', async (t) => {
   const reader = await createPeer(t, bootstrap, writer.remote.url)
   await reader.remote.core.update({ wait: true })
 
-  // REQUEST_CANCELLED today, here and on every read after it
   await t.execution(reader.remote.getRefObjects(tips[0]))
   await t.execution(reader.remote.getObject(tips[1]))
   await t.execution(reader.remote.getAllRefs())
@@ -72,7 +71,7 @@ async function replicates(t, bootstrap, seed, stats) {
       try {
         for (const { ref, oid } of await reader.remote.getAllRefs()) {
           if (ref === 'HEAD') continue
-          const ids = await fetchable(reader.remote, universe, oid)
+          const ids = (await reader.remote.getRefObjects(oid)).map((o) => o.id)
           if (ids.length === 0) {
             // not a ref tip any more: the writer moved or deleted it meanwhile
             stats.moved++
@@ -101,8 +100,7 @@ async function replicates(t, bootstrap, seed, stats) {
   if (!failure) {
     const deadline = Date.now() + 30000
     for (;;) {
-      const opts = { refObjects: !KNOWN.cancelledReads }
-      failure = await compare(reader.remote, model, universe, opts).then(
+      failure = await compare(reader.remote, model, universe).then(
         () => null,
         (err) => `reader did not converge: ${err.message}`
       )
@@ -116,19 +114,6 @@ async function replicates(t, bootstrap, seed, stats) {
 
   if (failure) t.fail(`GIP_SEED=${seed}: ${failure}`)
   return !failure
-}
-
-// The ids the reader can fetch for a ref tip. getRefObjects is the real path,
-// but it breaks a replica for good (KNOWN.cancelledReads), so until that is
-// fixed walk the same closure with getObject.
-async function fetchable(remote, universe, oid) {
-  if (!KNOWN.cancelledReads) return (await remote.getRefObjects(oid)).map((o) => o.id)
-
-  const ids = []
-  for (const id of universe.closure(oid)) {
-    if (await remote.getObject(id)) ids.push(id)
-  }
-  return ids
 }
 
 async function createPeer(t, bootstrap, link) {

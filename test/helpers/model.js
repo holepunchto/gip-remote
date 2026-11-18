@@ -8,6 +8,8 @@ module.exports = class Model {
     this.branches = new Map()
     this.tags = new Map()
     this.head = null
+    // the branch this session made the head by default
+    this.auto = null
   }
 
   clone() {
@@ -16,31 +18,53 @@ module.exports = class Model {
     model.branches = new Map(this.branches)
     model.tags = new Map(this.tags)
     model.head = this.head
+    model.auto = this.auto
     return model
   }
 
+  links(oid) {
+    const m = this.meta.get(oid)
+    if (m.type === 'tag') return [m.object]
+    if (m.type === 'commit') return [m.tree, ...m.parents]
+    if (m.type === 'tree') return m.entries.filter((e) => e.mode !== '160000').map((e) => e.oid)
+    return []
+  }
+
+  // `ref` as Remote.push takes it: a branch name, or tags/<name>
   push(ref, oid, objects) {
     const has = (o) => objects.has(o) || this.objects.has(o)
 
-    let cur = oid
-    if (!has(cur)) throw new Error('Object not found: ' + cur)
-    while (this.meta.get(cur).type === 'tag') {
-      cur = this.meta.get(cur).object
-      if (!has(cur)) throw new Error('Object not found: ' + cur)
+    for (const o of objects.keys()) {
+      if (this.objects.has(o)) continue
+      for (const link of this.links(o)) {
+        if (!has(link)) throw new Error('Missing object: ' + link)
+      }
     }
-    if (this.meta.get(cur).type !== 'commit') throw new Error('Expected commit: ' + cur)
+
+    let cur = oid
+    if (!has(cur)) throw new Error('Missing object: ' + cur)
+    while (this.meta.get(cur).type === 'tag') cur = this.meta.get(cur).object
+
+    const tag = ref.startsWith('tags/')
+    if (!tag && this.meta.get(cur).type !== 'commit') throw new Error('Expected commit: ' + cur)
 
     for (const [o, obj] of objects) {
       if (!this.objects.has(o)) this.objects.set(o, obj)
     }
 
-    if (ref.startsWith('tags/')) {
+    if (tag) {
       this.tags.set(ref.slice(5), oid)
       return
     }
 
     this.branches.set(ref, oid)
-    if (this.head === null) this.head = ref
+    if (this.head === null || (this.head === this.auto && rank(ref) < rank(this.head))) {
+      this.head = this.auto = ref
+    }
+  }
+
+  reopen() {
+    this.auto = null
   }
 
   deleteBranch(name) {
@@ -53,12 +77,19 @@ module.exports = class Model {
 
   setHead(name) {
     this.head = name
+    this.auto = null
   }
 
   refs() {
     const refs = []
     for (const [name, oid] of this.branches) refs.push({ ref: `refs/heads/${name}`, oid })
-    for (const [name, oid] of this.tags) refs.push({ ref: `refs/tags/${name}`, oid })
+    for (const [name, oid] of this.tags) {
+      const ref = { ref: `refs/tags/${name}`, oid }
+      let peeled = oid
+      while (this.meta.get(peeled).type === 'tag') peeled = this.meta.get(peeled).object
+      if (peeled !== oid) ref.peeled = peeled
+      refs.push(ref)
+    }
     if (this.head !== null && this.branches.has(this.head)) {
       refs.push({
         ref: 'HEAD',
@@ -74,7 +105,8 @@ module.exports = class Model {
   }
 
   // Every stored object reachable from `oid`, skipping what `seen` holds.
-  // Like the Remote, `seen` also collects referenced oids that aren't stored.
+  // Like the Remote, `seen` also collects referenced oids that aren't stored
+  // (but not submodule commits, which are never followed).
   closure(oid, seen = new Set()) {
     const out = []
     const stack = [oid]
@@ -85,10 +117,7 @@ module.exports = class Model {
       if (!this.objects.has(cur)) continue
       out.push(cur)
 
-      const m = this.meta.get(cur)
-      if (m.type === 'tag') stack.push(m.object)
-      else if (m.type === 'commit') stack.push(m.tree, ...m.parents)
-      else if (m.type === 'tree') for (const e of m.entries) stack.push(e.oid)
+      stack.push(...this.links(cur))
     }
     return out
   }
@@ -97,12 +126,20 @@ module.exports = class Model {
     return this.tips().has(oid) ? this.closure(oid, seen) : []
   }
 
-  // The drive view of a ref: Map<path, { oid, mode }>, null when no such ref.
-  // A branch shadows a tag of the same name.
+  // The drive view of a ref: Map<path, { oid, mode }>, null when no such ref
+  // or when it is a tag of something other than a commit. `name` is a full
+  // ref name, or a bare one: a branch shadows a tag of the same name.
   files(name) {
-    let oid = this.branches.get(name) ?? this.tags.get(name)
+    let oid
+    if (name.startsWith('refs/heads/')) oid = this.branches.get(name.slice(11))
+    else if (name.startsWith('refs/tags/')) oid = this.tags.get(name.slice(10))
+    else {
+      oid = this.branches.get(name) ?? this.tags.get(name)
+      if (oid === undefined && name.startsWith('tags/')) oid = this.tags.get(name.slice(5))
+    }
     if (oid === undefined) return null
     while (this.meta.get(oid).type === 'tag') oid = this.meta.get(oid).object
+    if (this.meta.get(oid).type !== 'commit') return null
 
     const files = new Map()
     const walk = (treeOid, prefix) => {
@@ -116,4 +153,8 @@ module.exports = class Model {
     walk(this.meta.get(oid).tree, '')
     return files
   }
+}
+
+function rank(branch) {
+  return branch === 'main' ? 0 : branch === 'master' ? 1 : 2
 }
