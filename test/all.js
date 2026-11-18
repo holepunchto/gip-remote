@@ -12,6 +12,7 @@ async function runTests() {
   await import('./compression.js')
   await import('./crash.js')
   await import('./drive.js')
+  await import('./index.js')
   await import('./large-objects.js')
   await import('./link.js')
   await import('./model.js')

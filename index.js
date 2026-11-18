@@ -5,6 +5,7 @@ const ScopeLock = require('scope-lock')
 const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
+const cacheBlocks = require('./lib/block-cache')
 const GitPearLink = require('./lib/link')
 const {
   parseCommit,
@@ -29,6 +30,12 @@ const { TreeDrive } = RemoteDrive
 const BATCH = 256
 const BATCH_BYTES = 8 * 1024 * 1024
 const TREE_CACHE = 256
+// File index rows per transaction
+const ROWS = 4096
+// The path of the @gip/file-commits row that names the tree a branch's file
+// index is of. No file has it: paths start with a slash.
+const INDEXED = ''
+const BLOCK_CACHE_BYTES = 32 * 1024 * 1024
 const EMPTY = Buffer.alloc(0)
 
 class Remote extends ReadyResource {
@@ -67,6 +74,7 @@ class Remote extends ReadyResource {
     }
 
     const bee = new Hyperbee(store, config)
+    cacheBlocks(bee.core, BLOCK_CACHE_BYTES)
     this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
 
     this._timeout = opts.timeout || 240_000
@@ -100,13 +108,13 @@ class Remote extends ReadyResource {
   }
 
   async _write(fn, landed) {
-    const tx = this._db.transaction()
+    const writes = new Writes(this._db)
     let result
     try {
-      result = await fn(tx)
-      await tx.flush()
+      result = await fn(writes)
+      await writes.flush()
     } catch (err) {
-      tx.close()
+      writes.close()
       throw err
     }
     if (landed) landed(result)
@@ -153,7 +161,7 @@ class Remote extends ReadyResource {
 
   async setHead(branch) {
     return this._transaction(
-      (tx) => tx.insert('@gip/head', { branch }),
+      (w) => w.tx.insert('@gip/head', { branch }),
       () => (this._autoHead = null)
     )
   }
@@ -189,52 +197,53 @@ class Remote extends ReadyResource {
   }
 
   async deleteBranch(branchName) {
-    return this._transaction((tx) => this._deleteBranch(tx, branchName))
+    return this._transaction((w) => this._deleteBranch(w, branchName))
   }
 
-  async _deleteBranch(tx, branchName) {
-    const branch = await tx.get('@gip/branches', { name: branchName })
+  async _deleteBranch(w, branchName) {
+    const branch = await w.get('@gip/branches', { name: branchName })
     if (!branch) return false
 
-    await tx.delete('@gip/branches', { name: branchName })
-
-    // Remove file records for this branch
-    const files = tx.find('@gip/files', {
-      gte: { branch: branchName },
-      lte: { branch: branchName }
-    })
-    for await (const file of files) {
-      await tx.delete('@gip/files', { branch: branchName, path: file.path })
-      await tx.delete('@gip/file-commits', { branch: branchName, path: file.path })
-    }
+    const paths = await this._indexedPaths(w, branchName)
+    await w.tx.delete('@gip/branches', { name: branchName })
+    await w.tx.delete('@gip/file-commits', { branch: branchName, path: INDEXED })
+    await this._unindex(w, branchName, paths)
 
     return true
   }
 
-  async deleteTag(tagName) {
-    return this._transaction((tx) => this._deleteTag(tx, tagName))
+  // The paths of a branch's file records. Read to the end before anything
+  // is written: the writes that follow may span transactions.
+  async _indexedPaths(w, branch) {
+    const paths = []
+    const files = w.tx.find('@gip/files', { gte: { branch }, lte: { branch } })
+    for await (const file of files) paths.push(file.path)
+    return paths
   }
 
-  async _deleteTag(tx, tagName) {
-    const tag = await tx.get('@gip/tags', { name: tagName })
+  async _unindex(w, branch, paths) {
+    for (const path of paths) {
+      await w.delete('@gip/files', { branch, path })
+      await w.delete('@gip/file-commits', { branch, path })
+    }
+  }
+
+  async deleteTag(tagName) {
+    return this._transaction((w) => this._deleteTag(w, tagName))
+  }
+
+  async _deleteTag(w, tagName) {
+    const tag = await w.get('@gip/tags', { name: tagName })
     if (!tag) return false
 
-    await tx.delete('@gip/tags', { name: tagName })
+    await w.tx.delete('@gip/tags', { name: tagName })
 
     // Tags pushed by older versions were file-indexed as the branch
     // `tags/<name>`. A real branch of that name owns those rows.
     const filesBranch = 'tags/' + tagName
-    if (await tx.get('@gip/branches', { name: filesBranch })) return true
+    if (await w.get('@gip/branches', { name: filesBranch })) return true
 
-    const files = tx.find('@gip/files', {
-      gte: { branch: filesBranch },
-      lte: { branch: filesBranch }
-    })
-    for await (const file of files) {
-      await tx.delete('@gip/files', { branch: filesBranch, path: file.path })
-      await tx.delete('@gip/file-commits', { branch: filesBranch, path: file.path })
-    }
-
+    await this._unindex(w, filesBranch, await this._indexedPaths(w, filesBranch))
     return true
   }
 
@@ -243,32 +252,32 @@ class Remote extends ReadyResource {
   async deleteRef(ref, opts = {}) {
     const target = parseRef(ref)
 
-    return this._transaction(async (tx) => {
-      await this._expect(tx, target, opts.expect)
-      if (target.tag) return this._deleteTag(tx, target.name)
+    return this._transaction(async (w) => {
+      await this._expect(w, target, opts.expect)
+      if (target.tag) return this._deleteTag(w, target.name)
 
-      const head = await tx.get('@gip/head', {})
-      if (head && head.branch === target.name && (await this._tip(tx, target)) !== null) {
+      const head = await w.get('@gip/head', {})
+      if (head && head.branch === target.name && (await this._tip(w, target)) !== null) {
         throw error('DELETE_HEAD', 'Refusing to delete the head branch: ' + ref)
       }
-      return this._deleteBranch(tx, target.name)
+      return this._deleteBranch(w, target.name)
     })
   }
 
-  async _tip(tx, target) {
+  async _tip(db, target) {
     if (target.tag) {
-      const tag = await tx.get('@gip/tags', { name: target.name })
+      const tag = await db.get('@gip/tags', { name: target.name })
       return tag ? tag.oid : null
     }
-    const branch = await tx.get('@gip/branches', { name: target.name })
+    const branch = await db.get('@gip/branches', { name: target.name })
     return branch ? branch.commitOid : null
   }
 
   // expect: undefined = no check, null = the ref must not exist, an oid = the
   // ref must be at it. Runs inside the transaction that then writes the ref.
-  async _expect(tx, target, expect) {
+  async _expect(db, target, expect) {
     if (expect === undefined) return
-    const tip = await this._tip(tx, target)
+    const tip = await this._tip(db, target)
     if (tip !== expect) {
       throw error('STALE_REF', `Stale ref: expected ${expect}, found ${tip}`, {
         expected: expect,
@@ -309,7 +318,7 @@ class Remote extends ReadyResource {
       const sent = await this._store(objects)
 
       await this._write(
-        (tx) => this._point(tx, target, oid, sent, opts),
+        (w) => this._point(w, target, oid, sent, opts),
         (head) => {
           if (head) this._autoHead = head
         }
@@ -376,12 +385,12 @@ class Remote extends ReadyResource {
   }
 
   async _putBatch(objects) {
-    return this._write(async (tx) => {
+    return this._write(async (w) => {
       const fresh = await this._fresh(objects)
       const deflated = fresh.map(([, obj]) => deflateInline(obj.data || EMPTY))
       for (let i = 0; i < fresh.length; i++) {
         const [oid, { type, size }] = fresh[i]
-        await tx.insert('@gip/objects', { oid, type, size, data: deflated[i] })
+        await w.tx.insert('@gip/objects', { oid, type, size, data: deflated[i] })
       }
     })
   }
@@ -416,19 +425,22 @@ class Remote extends ReadyResource {
 
   // The object a ref can point at: its type, and its payload unless it is a
   // large blob.
-  async _resolve(tx, oid) {
-    const obj = await readObject(tx, oid)
+  async _resolve(db, oid) {
+    const obj = await readObject(db, oid)
     if (obj && obj.chunks && obj.type !== 'blob') await join(obj)
     return obj
   }
 
-  // The transaction that moves the ref: everything it reads is in the store.
-  async _point(tx, target, oid, sent, opts) {
-    await this._expect(tx, target, opts.expect)
+  // Move the ref: everything read here is in the store. For a branch the
+  // file index follows the ref. A large index is written over several
+  // transactions, the ref with the first; until the last one lands toDrive
+  // serves the branch from its tree instead.
+  async _point(w, target, oid, sent, opts) {
+    await this._expect(w, target, opts.expect)
 
     // 1. Dereference tag objects to find what the ref peels to
     let resolvedOid = oid
-    let obj = await this._resolve(tx, resolvedOid)
+    let obj = await this._resolve(w, resolvedOid)
     if (!obj) throw missingObjects([resolvedOid])
 
     let tagMeta = null
@@ -437,7 +449,7 @@ class Remote extends ReadyResource {
       if (!tagMeta) tagMeta = tag
       if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
       resolvedOid = tag.object
-      obj = await this._resolve(tx, resolvedOid)
+      obj = await this._resolve(w, resolvedOid)
       if (!obj) throw missingObjects([resolvedOid])
     }
 
@@ -450,7 +462,7 @@ class Remote extends ReadyResource {
     // tree made pushing a release history O(tags × files). A tag may point
     // at any object; one that isn't a commit has no tree, and no drive view.
     if (target.tag) {
-      await tx.insert('@gip/tags', {
+      await w.tx.insert('@gip/tags', {
         name: target.name,
         oid,
         commitOid: resolvedOid,
@@ -469,14 +481,34 @@ class Remote extends ReadyResource {
 
     const refName = target.name
 
-    // 2. Index the files of the tip
-    await this._index(tx, refName, resolvedOid, commit, sent)
+    // 2. Work out the file index of the new tip, before anything is written
+    const entries = treeReader(w)
+
+    // a. Enumerate the files of the tree, from the store: a thin push
+    //    doesn't re-send unchanged sub-trees.
+    const files = await walkFiles(entries, commit.tree, '', [])
+
+    // b. Reconcile deletions — file records whose paths no longer exist in
+    //    the new tree. Without this, files removed in a commit would persist
+    //    in the index forever (only `deleteBranch` cleans them up, and only
+    //    on full branch deletion). The drive view would keep showing ghost
+    //    files; consumers iterating @gip/files would emit stale entries.
+    const newPaths = new Set(files.map((f) => f.path))
+    const gone = (await this._indexedPaths(w, refName)).filter((path) => !newPaths.has(path))
+
+    // c. Find, for each file, the most recent commit IN THIS PUSH that
+    //    actually changed its blob — that's the commit we want to credit on
+    //    the @gip/files row. If we just stamped every file with the tip's
+    //    metadata, a fresh push of a multi-commit history would make every
+    //    file look like it was last edited by the tip, which is useless for
+    //    a tree view.
+    const lastTouch = await fileLastTouch(w, entries, sent, resolvedOid, commit, newPaths)
 
     // 3. Insert/update the branch record. No denormalized object list —
     // getRefObjects walks the graph from the tip, so the record only carries
     // the tip metadata. (Records written by older versions still hold their
     // lists; the walk is the fallback-free path for empty ones.)
-    await tx.insert('@gip/branches', {
+    await w.tx.insert('@gip/branches', {
       name: refName,
       commitOid: oid,
       treeOid: commit.tree,
@@ -488,61 +520,39 @@ class Remote extends ReadyResource {
 
     // 4. Default the head: the first branch pushed, until main (else master)
     // arrives in the same session. A head set with setHead is never moved.
-    const head = await tx.get('@gip/head', {})
-    const takesOver =
-      head && head.branch === this._autoHead && headRank(refName) < headRank(head.branch)
-    if (head && !takesOver) return
+    const head = await w.get('@gip/head', {})
+    const defaulted =
+      !head || (head.branch === this._autoHead && headRank(refName) < headRank(head.branch))
+    if (defaulted) await w.tx.insert('@gip/head', { branch: refName })
 
-    await tx.insert('@gip/head', { branch: refName })
-    return refName
+    // 5. Write the file index. It is marked as behind the ref until its last
+    // row is in.
+    await w.tx.insert('@gip/file-commits', { branch: refName, path: INDEXED, commitOid: '' })
+    await this._unindex(w, refName, gone)
+    await this._index(w, refName, files, lastTouch)
+    await w.tx.insert('@gip/file-commits', {
+      branch: refName,
+      path: INDEXED,
+      commitOid: commit.tree
+    })
+
+    return defaulted ? refName : null
   }
 
-  // Bring the @gip/files rows of a branch in line with the tree of `commit`.
-  async _index(tx, refName, commitOid, commit, sent) {
-    const entries = treeReader(tx)
-
-    // a. Enumerate the files of the tree, from the store: a thin push
-    //    doesn't re-send unchanged sub-trees.
-    const files = []
-    await walkFiles(entries, commit.tree, '', files)
-
-    // b. Reconcile deletions — remove file records whose paths no longer
-    //    exist in the new tree. Without this, files removed in a commit
-    //    would persist in the index forever (only `deleteBranch` cleans
-    //    them up, and only on full branch deletion). The drive view would
-    //    keep showing ghost files; consumers iterating @gip/files would
-    //    emit stale entries.
-    const newPaths = new Set(files.map((f) => f.path))
-    const existingFiles = tx.find('@gip/files', {
-      gte: { branch: refName },
-      lte: { branch: refName }
-    })
-    for await (const file of existingFiles) {
-      if (!newPaths.has(file.path)) {
-        await tx.delete('@gip/files', { branch: refName, path: file.path })
-        await tx.delete('@gip/file-commits', { branch: refName, path: file.path })
-      }
-    }
-
-    // c. Find, for each file, the most recent commit IN THIS PUSH that
-    //    actually changed its blob — that's the commit we want to credit on
-    //    the @gip/files row. If we just stamped every file with the tip's
-    //    metadata, a fresh push of a multi-commit history would make every
-    //    file look like it was last edited by the tip, which is useless for
-    //    a tree view.
-    //
-    //    Cases the fallback below handles:
-    //      - The push is thin or shallow and the path was already at this
-    //        blob before its oldest commit — keep the existing row as-is.
-    //      - First push containing a root commit — files appearing in the
-    //        root take the root commit's metadata.
-    const lastTouch = await fileLastTouch(tx, entries, sent, commitOid, commit, newPaths)
+  // Bring the @gip/files rows of a branch in line with `files`.
+  //
+  // Cases the fallback below handles:
+  //   - The push is thin or shallow and the path was already at this blob
+  //     before its oldest commit — keep the existing row as-is.
+  //   - First push containing a root commit — files appearing in the root
+  //     take the root commit's metadata.
+  async _index(w, refName, files, lastTouch) {
     const oldestInPush = lastTouch.oldest
 
     for (let i = 0; i < files.length; i += BATCH) {
       const slice = files.slice(i, i + BATCH)
       const rows = await Promise.all(
-        slice.map((file) => tx.get('@gip/files', { branch: refName, path: file.path }))
+        slice.map((file) => w.get('@gip/files', { branch: refName, path: file.path }))
       )
 
       for (let j = 0; j < slice.length; j++) {
@@ -582,12 +592,12 @@ class Remote extends ReadyResource {
           existing.message === meta.message &&
           existing.timestamp === meta.timestamp
         ) {
-          const attributed = await tx.get('@gip/file-commits', {
+          const attributed = await w.get('@gip/file-commits', {
             branch: refName,
             path: file.path
           })
           if (!attributed) {
-            await tx.insert('@gip/file-commits', {
+            await w.insert('@gip/file-commits', {
               branch: refName,
               path: file.path,
               commitOid: meta.commitOid
@@ -597,9 +607,9 @@ class Remote extends ReadyResource {
         }
 
         // Submodule commits aren't in the store
-        const blob = file.mode === '160000' ? null : await tx.get('@gip/objects', { oid: file.oid })
+        const blob = file.mode === '160000' ? null : await w.get('@gip/objects', { oid: file.oid })
 
-        await tx.insert('@gip/files', {
+        await w.insert('@gip/files', {
           branch: refName,
           path: file.path,
           oid: file.oid,
@@ -609,7 +619,7 @@ class Remote extends ReadyResource {
           message: meta.message,
           timestamp: meta.timestamp
         })
-        await tx.insert('@gip/file-commits', {
+        await w.insert('@gip/file-commits', {
           branch: refName,
           path: file.path,
           commitOid: meta.commitOid
@@ -709,9 +719,17 @@ class Remote extends ReadyResource {
     )
   }
 
-  async _branchDrive(branch) {
-    if (!(await this._db.get('@gip/branches', { name: branch }))) return null
-    const drive = new RemoteDrive(this._db, { branch })
+  async _branchDrive(name) {
+    const branch = await this._db.get('@gip/branches', { name })
+    if (!branch) return null
+
+    // A push moves the ref first and may still be writing the file index,
+    // or have died doing so: the tree is then the truth.
+    const indexed = await this._db.get('@gip/file-commits', { branch: name, path: INDEXED })
+    const drive =
+      indexed && indexed.commitOid !== branch.treeOid
+        ? new TreeDrive(this._db, { treeOid: branch.treeOid })
+        : new RemoteDrive(this._db, { branch: name })
     await drive.ready()
     return drive
   }
@@ -762,6 +780,47 @@ class Remote extends ReadyResource {
     }
 
     await this._db.update()
+  }
+}
+
+// Rows written under the write lock, cut into transactions of ROWS so that a
+// large file index never sits in one. What is written before the first cut
+// lands together: the ref a push moves and, for all but the largest pushes,
+// its whole index. Reads see what has been written so far.
+class Writes {
+  constructor(db) {
+    this._db = db
+    this._rows = 0
+    this.tx = db.transaction()
+  }
+
+  get(collection, key) {
+    return this.tx.get(collection, key)
+  }
+
+  async insert(collection, row) {
+    await this.tx.insert(collection, row)
+    await this._wrote()
+  }
+
+  async delete(collection, key) {
+    await this.tx.delete(collection, key)
+    await this._wrote()
+  }
+
+  async _wrote() {
+    if (++this._rows < ROWS) return
+    this._rows = 0
+    await this.tx.flush()
+    this.tx = this._db.transaction()
+  }
+
+  flush() {
+    return this.tx.flush()
+  }
+
+  close() {
+    this.tx.close()
   }
 }
 
