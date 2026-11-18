@@ -431,3 +431,66 @@ test('toDisk writes trees byte for byte', async (t) => {
   const raw = spawnSync('git', ['cat-file', 'tree', tree.oid], { cwd: dir })
   t.ok(b4a.equals(raw.stdout, tree.data))
 })
+
+test('toDisk takes an async iterable and packs it as it comes', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+  const { commit, objects } = history(500)
+
+  async function* stream() {
+    // `oid` is as good as `id`
+    for (const { oid, type, size, data } of objects) yield { oid, type, size, data }
+  }
+  await toDisk({ gitDir: bare, objects: stream(), refs: { 'refs/heads/main': commit.oid } })
+
+  t.is(fsck(bare), '')
+  t.is(gitExec(['--git-dir', bare, 'rev-list', '--objects', 'main']).split('\n').length - 1, 502)
+  t.is(readdirSync(join(bare, 'objects', 'pack')).length, 2, 'one pack and its index')
+  t.alike(leftovers(bare), [])
+
+  async function* few() {
+    yield* history(3).objects
+  }
+  await toDisk({ gitDir: bare, objects: few() })
+  t.is(readdirSync(join(bare, 'objects', 'pack')).length, 2, 'a few objects stay loose')
+  t.is(fsck(bare), '')
+
+  async function* none() {}
+  await toDisk({ gitDir: bare, objects: none() })
+  t.is(fsck(bare), '', 'an empty stream writes nothing')
+})
+
+test('toDisk writes an object that comes in chunks without joining it', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+
+  const data = b4a.alloc(3 * 1024 * 1024 + 123)
+  for (let i = 0; i < data.byteLength; i++) data[i] = (i * 31 + (i >> 9)) % 251
+  const blob = git.blob(data)
+  const empty = git.blob('')
+
+  async function* chunks(size) {
+    for (let i = 0; i < data.byteLength; i += size) yield data.subarray(i, i + size)
+  }
+  async function* none() {}
+  const chunked = (size) => [
+    { id: blob.oid, type: 'blob', size: blob.size, chunks: chunks(size) },
+    { id: empty.oid, type: 'blob', size: 0, chunks: none() }
+  ]
+
+  await toDisk({ gitDir: bare, objects: chunked(1024 * 1024) })
+  t.is(fsck(bare), '')
+  const out = spawnSync('git', ['--git-dir', bare, 'cat-file', 'blob', blob.oid], {
+    maxBuffer: data.byteLength * 2
+  })
+  t.ok(b4a.equals(out.stdout, data), 'git reads back the same bytes')
+  t.is(gitExec(['--git-dir', bare, 'cat-file', '-s', empty.oid]).trim(), '0')
+
+  const short = [{ id: blob.oid, type: 'blob', size: blob.size + 1, chunks: chunks(65536) }]
+  await t.exception(toDisk({ gitDir: bare, objects: short }), /Size mismatch/)
+  const wrong = [{ id: 'deadbeef'.repeat(5), type: 'blob', size: blob.size, chunks: chunks(65536) }]
+  await t.exception(toDisk({ gitDir: bare, objects: wrong }), /OID mismatch/)
+  t.alike(leftovers(bare), [], 'a bad object leaves nothing behind')
+})
