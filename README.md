@@ -46,7 +46,10 @@ await remote.push('main', commitOid, objects)
 
 ```js
 const refs = await remote.getAllRefs()
-const objects = await remote.getRefObjects(commitOid)
+
+for await (const { oid, type, size, data } of remote.refObjects(commitOid)) {
+  // ...
+}
 ```
 
 ### toDrive
@@ -74,11 +77,9 @@ Write git objects directly into a git dir on disk.
 ```js
 const { toDisk } = require('gip-remote/lib/git')
 
-const objects = await remote.getRefObjects(commitOid)
-
 await toDisk({
   gitDir: '/path/to/repo/.git',
-  objects,
+  objects: remote.refObjects(commitOid),
   refs: { 'refs/heads/main': commitOid },
   head: 'main'
 })
@@ -106,9 +107,11 @@ Discovery key used for swarming.
 
 #### `await remote.pushRef(ref, oid, objects, [opts])`
 
-Store `objects` and point `ref` at `oid`, in one transaction. `ref` is a full ref name, `refs/heads/<name>` or `refs/tags/<name>`. A branch must point at a commit, a tag may point at any object.
+Store `objects` and point `ref` at `oid`. `ref` is a full ref name, `refs/heads/<name>` or `refs/tags/<name>`. A branch must point at a commit, a tag may point at any object.
 
-`objects` is a `Map<oid, { type, size, data }>`, or an iterable or async iterable of `{ oid, type, size, data }`. It only needs to hold what the remote doesn't have yet.
+`objects` is a `Map<oid, { type, size, data }>`, or an iterable or async iterable of `{ oid, type, size, data }`. It only needs to hold what the remote doesn't have yet. A blob may have `chunks`, an async iterable of buffers, instead of `data`: it is stored piece by piece and never held whole.
+
+Objects are written as they come, a bounded batch at a time, so an async iterable is pushed in bounded memory. A final small transaction checks `opts.expect` and moves the ref. The ref is always either where it was, or at `oid` with everything `oid` reaches. A push that fails or is killed leaves at most objects that no ref points at; the next push reuses them.
 
 - `opts.expect` - `null`: the ref must not exist yet. An oid: the ref must currently be at it. Left out: no check.
 
@@ -116,7 +119,7 @@ Rejects with an error whose `code` is:
 
 - `STALE_REF` - the ref is not where `opts.expect` says (`err.expected`, `err.actual`)
 - `UNSUPPORTED_REF` - the ref is outside `refs/heads/` and `refs/tags/`
-- `MISSING_OBJECTS` - an object the push brings links to something that is neither in the push nor in the store (`err.missing`), as a push from a shallow clone does
+- `MISSING_OBJECTS` - an object of the push links to something that is neither in the push nor in the store (`err.missing`), as a push from a shallow clone does
 
 The first branch pushed becomes the head. Until the remote is closed, a push of `main`, else `master`, takes the head over from it. A head set with `setHead` stays.
 
@@ -144,11 +147,17 @@ Returns an array of `{ ref, oid }`. `HEAD` also has `symref`, and an annotated t
 
 Returns `{ ref, oid }` or `null`.
 
+#### `for await (const obj of remote.refObjects(oid, [opts]))`
+
+Every object reachable from `oid`, which must be the tip of a ref, as `{ id, oid, type, size, data }`. Objects are yielded as the walk reaches them, and only the oids seen are kept in memory.
+
+A blob too large for one block (over 8 MiB) has `data: null` and `chunks`, an async iterable of its buffers. Both `pushRef` and `toDisk` take objects of this shape, so a fetch can be piped into either.
+
+- `opts.seen` - a `Set` shared across calls: objects in it are left out, and the ones yielded are added
+
 #### `await remote.getRefObjects(oid, [onLoad], [opts])`
 
-Returns every object reachable from `oid`, which must be the tip of a ref.
-
-- `opts.seen` - a `Set` shared across calls: objects in it are left out, and the ones returned are added
+`refObjects` collected into an array, with large blobs joined into `data`.
 
 #### `await remote.getObject(oid)`
 
@@ -160,12 +169,14 @@ Returns a drive compatible with `mirror-drive`. `name` is a full ref name, or a 
 
 Tree entries whose name is not safe as a path (`.git`, `..`, names with a slash or backslash) are stored and fetched like any other, but left out of the drive.
 
+A branch's drive reads the file index a push writes. The index of a very large change is written in several steps after the ref has moved; until the last one, the drive is served from the tree instead.
+
 #### `await toDisk(opts)`
 
-Write git objects into a git dir. Each file is written under a temporary name and renamed into place. Fewer than 100 objects are written loose, more as one pack.
+Write git objects into a git dir. Each file is written under a temporary name and renamed into place. Fewer than 100 objects are written loose, more as one pack, which is written as the objects come.
 
 - `opts.gitDir` - the git dir itself (required): `repo/.git`, a bare repository, a linked worktree's git dir, or a `.git` file pointing at one
-- `opts.objects` - array of `{ type, id, size, data }` (required)
+- `opts.objects` - array, iterable or async iterable of `{ type, id, size, data }` (required). `oid` is read when there is no `id`, and an object may have `chunks` instead of `data`, as `refObjects` yields them. A stream must not repeat an object.
 - `opts.refs` - object mapping ref names to OIDs, e.g. `{ 'refs/heads/main': commitOid }`
 - `opts.head` - branch name to set HEAD to, e.g. `'main'`
 - `opts.objectFormat` - hash algorithm, only `'sha1'` supported (default)

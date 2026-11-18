@@ -67,6 +67,7 @@
   "homepage": "https://github.com/holepunchto/gip-remote",
   "devDependencies": {
     "bare-env": "^3.0.1",
+    "bare-os": "^3.9.3",
     "bare-subprocess": "^6.1.0",
     "brittle": "^4.1.0",
     "corestore": "^7.11.1",

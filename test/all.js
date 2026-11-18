@@ -15,6 +15,7 @@ async function runTests() {
   await import('./index.js')
   await import('./large-objects.js')
   await import('./link.js')
+  await import('./memory.js')
   await import('./model.js')
   await import('./namespaces.js')
   await import('./refs.js')

@@ -23,10 +23,14 @@ interface Ref {
 }
 
 type PushObject = { type: string; size: number; data: Buffer }
-type PushObjects =
-  | Map<string, PushObject>
-  | Iterable<PushObject & { oid: string }>
-  | AsyncIterable<PushObject & { oid: string }>
+type PushedObject = {
+  oid: string
+  type: string
+  size: number
+  data?: Buffer | null
+  chunks?: AsyncIterable<Buffer> | Iterable<Buffer>
+}
+type PushObjects = Map<string, PushObject> | Iterable<PushedObject> | AsyncIterable<PushedObject>
 
 interface RefOpts {
   expect?: string | null
@@ -41,6 +45,16 @@ interface RemoteError extends Error {
 
 interface RefObject extends GitObject {
   id: string
+}
+
+// As refObjects yields them: a blob over 8 MiB has `chunks` and no `data`
+interface StreamedObject {
+  id: string
+  oid: string
+  type: string
+  size: number
+  data: Buffer | null
+  chunks?: AsyncIterable<Buffer>
 }
 
 declare class Remote {
@@ -74,6 +88,8 @@ declare class Remote {
     onLoad?: ((size: number) => void) | null,
     opts?: { seen?: Set<string> }
   ): Promise<RefObject[]>
+
+  refObjects(oid: string, opts?: { seen?: Set<string> }): AsyncIterableIterator<StreamedObject>
 
   toDrive(name: string): Promise<RemoteDrive | null>
 
@@ -120,9 +136,21 @@ declare const GitPearLink: {
   serialize(o: ParsedGitPearLink): string
 }
 
+type DiskObject = {
+  id?: string
+  oid?: string
+  type: string
+  size: number
+  data?: Buffer | null
+  chunks?: AsyncIterable<Buffer> | Iterable<Buffer>
+}
+
 interface ToDiskOpts {
   gitDir: string
-  objects: Array<{ type: string; id: string; size: number; data: Buffer }>
+  objects:
+    | Array<{ type: string; id: string; size: number; data: Buffer }>
+    | Iterable<DiskObject>
+    | AsyncIterable<DiskObject>
   refs?: Record<string, string>
   head?: string
   objectFormat?: 'sha1'
@@ -161,6 +189,7 @@ export type {
   GitObject,
   Ref,
   RefObject,
+  StreamedObject,
   RefOpts,
   RemoteError,
   PushObjects,
