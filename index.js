@@ -6,11 +6,30 @@ const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const GitPearLink = require('./lib/link')
-const { parseCommit, parseTag, walkTree, objectLinks } = require('./lib/git')
-const { getObject, deflateObject, putObject } = require('./lib/objects')
+const {
+  parseCommit,
+  parseTag,
+  walkTree,
+  treeEntries,
+  isUnsafeName,
+  objectLinks
+} = require('./lib/git')
+const {
+  getObject,
+  readObject,
+  join,
+  deflateInline,
+  putChunked,
+  OBJECT_CHUNK_SIZE
+} = require('./lib/objects')
 const { TreeDrive } = RemoteDrive
 
+// Objects are written, and rows read, this many at a time, and a batch of
+// objects is also cut at this many bytes.
 const BATCH = 256
+const BATCH_BYTES = 8 * 1024 * 1024
+const TREE_CACHE = 256
+const EMPTY = Buffer.alloc(0)
 
 class Remote extends ReadyResource {
   _db = null
@@ -18,9 +37,10 @@ class Remote extends ReadyResource {
   _name = null
   _timeout = 0
   _writeLock = new ScopeLock()
-  // Oids confirmed present this session — objects are append-only, so a
-  // confirmation never goes stale. Saves re-checking the shared thin set on
-  // every ref of a multi-ref push (git push --tags is one push() per tag).
+  // Oids this session knows are in the store with everything they link to.
+  // Objects are append-only, so that never goes stale. Saves re-checking the
+  // shared thin set on every ref of a multi-ref push (git push --tags is one
+  // push() per tag).
   _storedOids = new Set()
   // The branch this session made the head by default. While it stands, a
   // push of main (else master) takes the head over from it.
@@ -76,19 +96,21 @@ class Remote extends ReadyResource {
   // on flush, nothing on error.
   // `landed` runs once the write is durable, still behind the lock.
   async _transaction(fn, landed) {
-    return this._locked(async () => {
-      const tx = this._db.transaction()
-      let result
-      try {
-        result = await fn(tx)
-        await tx.flush()
-      } catch (err) {
-        tx.close()
-        throw err
-      }
-      if (landed) landed(result)
-      return result
-    })
+    return this._locked(() => this._write(fn, landed))
+  }
+
+  async _write(fn, landed) {
+    const tx = this._db.transaction()
+    let result
+    try {
+      result = await fn(tx)
+      await tx.flush()
+    } catch (err) {
+      tx.close()
+      throw err
+    }
+    if (landed) landed(result)
+    return result
   }
 
   get name() {
@@ -267,98 +289,146 @@ class Remote extends ReadyResource {
   //
   // `objects` is a Map of oid → { type, size, data }, or an iterable or async
   // iterable of { oid, type, size, data }. It may be a thin set — just the
-  // objects the remote doesn't have yet. Anything else needed for indexing
-  // (the tip on a no-op push, unchanged sub-trees) is pulled from the store
-  // on demand. Whatever a new object links to must be in the set or in the
-  // store, or the push is rejected (MISSING_OBJECTS).
+  // objects the remote doesn't have yet.
+  //
+  // Objects are content-addressed, so they are written first, as they come
+  // and a bounded batch at a time. One small transaction then checks
+  // `expect` and moves the ref. The ref is either where it was or at `oid`
+  // with everything it reaches; a push that fails or dies half way leaves at
+  // most objects no ref points at, which the next push reuses.
   async pushRef(ref, oid, objects, opts = {}) {
     const target = parseRef(ref)
-    const stored = []
 
-    await this._transaction(
-      (tx) => this._push(tx, target, oid, objects, opts, stored),
-      (head) => {
-        for (const o of stored) this._storedOids.add(o)
-        if (head) this._autoHead = head
-      }
-    )
+    // One push at a time, start to end: a second one may count on the
+    // objects of the first.
+    await this._locked(async () => {
+      // A stale push shouldn't write its objects first. Checked again, for
+      // real, in the transaction that moves the ref.
+      await this._expect(this._db, target, opts.expect)
+
+      const sent = await this._store(objects)
+
+      await this._write(
+        (tx) => this._point(tx, target, oid, sent, opts),
+        (head) => {
+          if (head) this._autoHead = head
+        }
+      )
+    })
   }
 
-  // Look an object up in the pushed set first, then in the store — thin
-  // pushes reference objects that arrived in an earlier push.
-  async _resolveObject(tx, objects, oid) {
-    const obj = objects.get(oid)
-    if (obj) return obj
-    const stored = await getObject(tx, oid)
-    if (stored) objects.resolved.set(oid, stored)
-    return stored
+  async _has(oid) {
+    return this._storedOids.has(oid) || (await this._db.get('@gip/objects', { oid })) !== null
   }
 
-  // Store what the remote doesn't have yet, and return the pushed set as a
-  // lookup. An iterable is consumed as it comes: blobs go straight to the
-  // store and only their size is kept.
-  async _store(tx, source, stored) {
-    const pushed = source instanceof Map ? source : new Map()
-    const resolved = new Map()
-    const fresh = new Set()
-    const links = new Set()
+  // Write the objects the remote doesn't have, and check that whatever they
+  // link to is in the push or in the store (MISSING_OBJECTS). Returns the
+  // oids of the push. Memory is one batch plus those oids.
+  async _store(source) {
+    const sent = new Set()
+    const wanted = new Set()
+    let batch = []
+    let bytes = 0
 
-    // The presence check is cheap (the stub row exists for chunked objects
-    // too) and runs in batches instead of one awaited round-trip per object.
-    const put = async (batch) => {
-      const existing = await Promise.all(batch.map(([oid]) => this._has(tx, oid)))
-      const deflated = batch.map(([, obj], i) => (existing[i] ? null : deflateObject(obj)))
-      for (let i = 0; i < batch.length; i++) {
-        const [oid, obj] = batch[i]
-        stored.push(oid)
-        if (existing[i]) continue
-        await putObject(tx, oid, deflated[i])
-        fresh.add(oid)
-        for (const link of objectLinks(obj)) links.add(link)
-      }
+    const flush = async () => {
+      const objects = batch
+      batch = []
+      bytes = 0
+      if (objects.length > 0) await this._putBatch(objects)
     }
 
-    const batch = []
-    if (source instanceof Map) {
-      for (const entry of source) {
-        if (batch.push(entry) === BATCH) await put(batch.splice(0))
+    const entries = source instanceof Map ? source : withOids(source)
+    for await (let [oid, obj] of entries) {
+      if (sent.has(oid)) continue
+      sent.add(oid)
+      wanted.delete(oid)
+      // Stored and checked earlier this session
+      if (this._storedOids.has(oid)) continue
+
+      if (obj.size > OBJECT_CHUNK_SIZE) {
+        // Only a blob is worth streaming: anything else has links to read
+        if (obj.chunks && obj.type !== 'blob') obj = await join({ ...obj })
+        await flush()
+        await this._putChunked(oid, obj)
+      } else {
+        if (obj.chunks) obj = await join({ ...obj })
+        bytes += obj.size
+        if (batch.push([oid, obj]) === BATCH || bytes >= BATCH_BYTES) await flush()
       }
-    } else {
-      for await (const obj of source) {
-        pushed.set(obj.oid, obj.type === 'blob' ? { type: obj.type, size: obj.size } : obj)
-        if (batch.push([obj.oid, obj]) === BATCH) await put(batch.splice(0))
+
+      for (const link of objectLinks(obj)) {
+        if (!sent.has(link)) wanted.add(link)
       }
     }
-    await put(batch)
+    await flush()
 
-    // Connectivity: every object stored so far has its links in the store,
-    // so only the new ones need checking, and only one level deep.
-    const boundary = []
-    for (const oid of links) if (!fresh.has(oid)) boundary.push(oid)
+    const boundary = [...wanted]
     const missing = []
     for (let i = 0; i < boundary.length; i += BATCH) {
       const slice = boundary.slice(i, i + BATCH)
-      const existing = await Promise.all(slice.map((oid) => this._has(tx, oid)))
+      const existing = await Promise.all(slice.map((oid) => this._has(oid)))
       for (let j = 0; j < slice.length; j++) if (!existing[j]) missing.push(slice[j])
     }
     if (missing.length > 0) throw missingObjects(missing)
 
-    return { resolved, get: (oid) => pushed.get(oid) ?? resolved.get(oid) }
+    for (const oid of sent) this._storedOids.add(oid)
+    return sent
   }
 
-  async _has(tx, oid) {
-    return this._storedOids.has(oid) || (await tx.get('@gip/objects', { oid })) !== null
+  async _putBatch(objects) {
+    return this._write(async (tx) => {
+      const fresh = await this._fresh(objects)
+      const deflated = fresh.map(([, obj]) => deflateInline(obj.data || EMPTY))
+      for (let i = 0; i < fresh.length; i++) {
+        const [oid, { type, size }] = fresh[i]
+        await tx.insert('@gip/objects', { oid, type, size, data: deflated[i] })
+      }
+    })
   }
 
-  async _push(tx, target, oid, source, opts, stored) {
+  async _fresh(objects) {
+    // The presence check is cheap (the stub row exists for chunked objects
+    // too) and runs as one batch instead of an awaited round-trip per object.
+    const existing = await Promise.all(objects.map(([oid]) => this._has(oid)))
+    return objects.filter((_, i) => !existing[i])
+  }
+
+  async _putChunked(oid, obj) {
+    if (await this._has(oid)) return
+
+    let tx = this._db.transaction()
+    try {
+      await putChunked(
+        () => tx,
+        oid,
+        obj,
+        async () => {
+          await tx.flush()
+          tx = this._db.transaction()
+        }
+      )
+      await tx.flush()
+    } catch (err) {
+      tx.close()
+      throw err
+    }
+  }
+
+  // The object a ref can point at: its type, and its payload unless it is a
+  // large blob.
+  async _resolve(tx, oid) {
+    const obj = await readObject(tx, oid)
+    if (obj && obj.chunks && obj.type !== 'blob') await join(obj)
+    return obj
+  }
+
+  // The transaction that moves the ref: everything it reads is in the store.
+  async _point(tx, target, oid, sent, opts) {
     await this._expect(tx, target, opts.expect)
 
-    // 1. Store all git objects the remote doesn't already have.
-    const objects = await this._store(tx, source, stored)
-
-    // 2. Dereference tag objects to find what the ref peels to
+    // 1. Dereference tag objects to find what the ref peels to
     let resolvedOid = oid
-    let obj = await this._resolveObject(tx, objects, resolvedOid)
+    let obj = await this._resolve(tx, resolvedOid)
     if (!obj) throw missingObjects([resolvedOid])
 
     let tagMeta = null
@@ -367,7 +437,7 @@ class Remote extends ReadyResource {
       if (!tagMeta) tagMeta = tag
       if (!tag.object) throw new Error('Tag has no object: ' + resolvedOid)
       resolvedOid = tag.object
-      obj = await this._resolveObject(tx, objects, resolvedOid)
+      obj = await this._resolve(tx, resolvedOid)
       if (!obj) throw missingObjects([resolvedOid])
     }
 
@@ -399,143 +469,10 @@ class Remote extends ReadyResource {
 
     const refName = target.name
 
-    // 3. Walk tree to enumerate files. A thin push doesn't re-send unchanged
-    // sub-trees, so pull whatever the walk couldn't expand from the store
-    // and re-walk until the tree is complete.
-    let files
-    for (;;) {
-      const missing = []
-      files = walkTree(objects, commit.tree, '', missing)
-      if (missing.length === 0) break
-      let resolved = 0
-      for (const treeOid of missing) {
-        if (await this._resolveObject(tx, objects, treeOid)) resolved++
-      }
-      if (resolved === 0) break // genuinely absent — index what we can see
-    }
+    // 2. Index the files of the tip
+    await this._index(tx, refName, resolvedOid, commit, sent)
 
-    // 4a. Reconcile deletions — remove file records whose paths no longer
-    //     exist in the new tree. Without this, files removed in a commit
-    //     would persist in the index forever (only `deleteBranch` cleans
-    //     them up, and only on full branch deletion). The drive view would
-    //     keep showing ghost files; consumers iterating @gip/files would
-    //     emit stale entries.
-    //
-    //     We rebuild the new path set first, then sweep the existing
-    //     records — O(N) in the size of the indexed tree, same order as
-    //     the insert step that follows.
-    const newPaths = new Set(files.map((f) => f.path))
-    const existingFiles = tx.find('@gip/files', {
-      gte: { branch: refName },
-      lte: { branch: refName }
-    })
-    for await (const file of existingFiles) {
-      if (!newPaths.has(file.path)) {
-        await tx.delete('@gip/files', { branch: refName, path: file.path })
-        await tx.delete('@gip/file-commits', { branch: refName, path: file.path })
-      }
-    }
-
-    // 4b. Compute, for each file in HEAD's tree, the most recent commit IN
-    //     THIS PUSH that actually changed its blob — that's the commit we
-    //     want to credit on the @gip/files row. If we just stamped every
-    //     file with HEAD's metadata (the previous behaviour), a fresh push
-    //     of a multi-commit history would make every file look like it was
-    //     last edited by HEAD, which is useless for a tree view.
-    //
-    //     Algorithm: walk the commit chain HEAD → first-parent through the
-    //     commits we have in the pack, flatten each commit's tree into a
-    //     path → oid map, and for each path record the most recent commit
-    //     whose tree differs at that path from its first-parent's tree.
-    //     We don't follow merge parents — same heuristic GitHub's "blame"
-    //     uses; it keeps cost predictable and matches user expectation.
-    //
-    //     Cases the fallback below handles:
-    //       - Pack is shallow and the path was already at HEAD's blob
-    //         before our oldest commit — keep the existing row as-is.
-    //       - First push containing a root commit — files appearing in the
-    //         root take the root commit's metadata.
-    const fileLastTouch = computeFileLastTouch(objects, resolvedOid, commit)
-    const oldestInPack = fileLastTouch.oldest
-
-    for (const file of files) {
-      const existing = await tx.get('@gip/files', {
-        branch: refName,
-        path: file.path
-      })
-
-      let meta = fileLastTouch.byPath.get(file.path)
-
-      if (!meta) {
-        // No commit in our pack changed this file. Either it's been at this
-        // blob since before our window, or the pack is shallow.
-        if (existing && existing.oid === file.oid && existing.mode === file.mode) {
-          // Genuinely unchanged from prior push — leave row alone.
-          continue
-        }
-        // Fall back to the oldest commit we have. Best approximation when a
-        // shallow clone is being seeded (we don't have the real introducing
-        // commit, but the oldest commit in the pack is a strict upper bound
-        // on "when it could have last changed" given what we know).
-        meta = {
-          author: oldestInPack.author,
-          message: oldestInPack.message,
-          timestamp: oldestInPack.timestamp,
-          commitOid: oldestInPack.oid
-        }
-      }
-
-      // Idempotency: if the existing row already reflects the same blob,
-      // mode, and metadata we'd write, skip the insert. Saves a write
-      // round-trip on no-op pushes (e.g. retries). The attribution row is
-      // still written when absent so rows from before it existed backfill.
-      if (
-        existing &&
-        existing.oid === file.oid &&
-        existing.mode === file.mode &&
-        existing.message === meta.message &&
-        existing.timestamp === meta.timestamp
-      ) {
-        const attributed = await tx.get('@gip/file-commits', {
-          branch: refName,
-          path: file.path
-        })
-        if (!attributed) {
-          await tx.insert('@gip/file-commits', {
-            branch: refName,
-            path: file.path,
-            commitOid: meta.commitOid
-          })
-        }
-        continue
-      }
-
-      // A thin push doesn't carry blobs the remote has: their size is in
-      // the store. Submodule commits are in neither.
-      let size = file.size
-      if (file.mode !== '160000' && !objects.get(file.oid)) {
-        const blob = await tx.get('@gip/objects', { oid: file.oid })
-        if (blob) size = blob.size
-      }
-
-      await tx.insert('@gip/files', {
-        branch: refName,
-        path: file.path,
-        oid: file.oid,
-        mode: file.mode,
-        size,
-        author: meta.author,
-        message: meta.message,
-        timestamp: meta.timestamp
-      })
-      await tx.insert('@gip/file-commits', {
-        branch: refName,
-        path: file.path,
-        commitOid: meta.commitOid
-      })
-    }
-
-    // 5. Insert/update the branch record. No denormalized object list —
+    // 3. Insert/update the branch record. No denormalized object list —
     // getRefObjects walks the graph from the tip, so the record only carries
     // the tip metadata. (Records written by older versions still hold their
     // lists; the walk is the fallback-free path for empty ones.)
@@ -549,7 +486,7 @@ class Remote extends ReadyResource {
       objects: []
     })
 
-    // 6. Default the head: the first branch pushed, until main (else master)
+    // 4. Default the head: the first branch pushed, until main (else master)
     // arrives in the same session. A head set with setHead is never moved.
     const head = await tx.get('@gip/head', {})
     const takesOver =
@@ -558,6 +495,127 @@ class Remote extends ReadyResource {
 
     await tx.insert('@gip/head', { branch: refName })
     return refName
+  }
+
+  // Bring the @gip/files rows of a branch in line with the tree of `commit`.
+  async _index(tx, refName, commitOid, commit, sent) {
+    const entries = treeReader(tx)
+
+    // a. Enumerate the files of the tree, from the store: a thin push
+    //    doesn't re-send unchanged sub-trees.
+    const files = []
+    await walkFiles(entries, commit.tree, '', files)
+
+    // b. Reconcile deletions — remove file records whose paths no longer
+    //    exist in the new tree. Without this, files removed in a commit
+    //    would persist in the index forever (only `deleteBranch` cleans
+    //    them up, and only on full branch deletion). The drive view would
+    //    keep showing ghost files; consumers iterating @gip/files would
+    //    emit stale entries.
+    const newPaths = new Set(files.map((f) => f.path))
+    const existingFiles = tx.find('@gip/files', {
+      gte: { branch: refName },
+      lte: { branch: refName }
+    })
+    for await (const file of existingFiles) {
+      if (!newPaths.has(file.path)) {
+        await tx.delete('@gip/files', { branch: refName, path: file.path })
+        await tx.delete('@gip/file-commits', { branch: refName, path: file.path })
+      }
+    }
+
+    // c. Find, for each file, the most recent commit IN THIS PUSH that
+    //    actually changed its blob — that's the commit we want to credit on
+    //    the @gip/files row. If we just stamped every file with the tip's
+    //    metadata, a fresh push of a multi-commit history would make every
+    //    file look like it was last edited by the tip, which is useless for
+    //    a tree view.
+    //
+    //    Cases the fallback below handles:
+    //      - The push is thin or shallow and the path was already at this
+    //        blob before its oldest commit — keep the existing row as-is.
+    //      - First push containing a root commit — files appearing in the
+    //        root take the root commit's metadata.
+    const lastTouch = await fileLastTouch(tx, entries, sent, commitOid, commit, newPaths)
+    const oldestInPush = lastTouch.oldest
+
+    for (let i = 0; i < files.length; i += BATCH) {
+      const slice = files.slice(i, i + BATCH)
+      const rows = await Promise.all(
+        slice.map((file) => tx.get('@gip/files', { branch: refName, path: file.path }))
+      )
+
+      for (let j = 0; j < slice.length; j++) {
+        const file = slice[j]
+        const existing = rows[j]
+
+        let meta = lastTouch.byPath.get(file.path)
+
+        if (!meta) {
+          // No commit in this push changed this file. Either it's been at
+          // this blob since before our window, or the push is shallow.
+          if (existing && existing.oid === file.oid && existing.mode === file.mode) {
+            // Genuinely unchanged from prior push — leave row alone.
+            continue
+          }
+          // Fall back to the oldest commit we have. Best approximation when
+          // a shallow clone is being seeded (we don't have the real
+          // introducing commit, but the oldest commit in the push is a
+          // strict upper bound on "when it could have last changed" given
+          // what we know).
+          meta = {
+            author: oldestInPush.author,
+            message: oldestInPush.message,
+            timestamp: oldestInPush.timestamp,
+            commitOid: oldestInPush.oid
+          }
+        }
+
+        // Idempotency: if the existing row already reflects the same blob,
+        // mode, and metadata we'd write, skip the insert. Saves a write
+        // round-trip on no-op pushes (e.g. retries). The attribution row is
+        // still written when absent so rows from before it existed backfill.
+        if (
+          existing &&
+          existing.oid === file.oid &&
+          existing.mode === file.mode &&
+          existing.message === meta.message &&
+          existing.timestamp === meta.timestamp
+        ) {
+          const attributed = await tx.get('@gip/file-commits', {
+            branch: refName,
+            path: file.path
+          })
+          if (!attributed) {
+            await tx.insert('@gip/file-commits', {
+              branch: refName,
+              path: file.path,
+              commitOid: meta.commitOid
+            })
+          }
+          continue
+        }
+
+        // Submodule commits aren't in the store
+        const blob = file.mode === '160000' ? null : await tx.get('@gip/objects', { oid: file.oid })
+
+        await tx.insert('@gip/files', {
+          branch: refName,
+          path: file.path,
+          oid: file.oid,
+          mode: file.mode,
+          size: blob ? blob.size : 0,
+          author: meta.author,
+          message: meta.message,
+          timestamp: meta.timestamp
+        })
+        await tx.insert('@gip/file-commits', {
+          branch: refName,
+          path: file.path,
+          commitOid: meta.commitOid
+        })
+      }
+    }
   }
 
   // Ref tips by oid, so a fetch of many refs doesn't scan them per ref. The
@@ -588,56 +646,51 @@ class Remote extends ReadyResource {
   // opts.seen — a Set shared across calls so a multi-ref fetch (a clone
   // pulls every branch and tag) walks shared history once; objects already
   // seen are omitted from the result, the caller has them.
-  async getRefObjects(oid, onLoad, opts = {}) {
-    const tip = (await this._tips()).get(oid)
-    if (!tip) return []
+  async getRefObjects(oid, onLoad, opts) {
+    const results = []
+    for await (const obj of this.refObjects(oid, opts)) {
+      if (obj.chunks) await join(obj)
+      if (onLoad) onLoad(obj.size)
+      results.push(obj)
+    }
+    return results
+  }
 
-    // Only records written by older versions need reading in full
-    const record = tip.legacy ? await this._db.get(tip.collection, { name: tip.name }) : null
+  // getRefObjects as an async iterator: objects are yielded as the walk
+  // reaches them and nothing but `opts.seen` is kept. A blob too large for
+  // one block has `chunks`, an async iterable of buffers, instead of `data`.
+  async *refObjects(oid, opts = {}) {
+    const tip = (await this._tips()).get(oid)
+    if (!tip) return
 
     const seen = opts.seen ?? new Set()
 
     // Records written by older versions carry the denormalized reachable
-    // set — serve it directly.
-    if (record && record.objects.length > 0) {
-      const results = []
-      for (const objOid of record.objects) {
-        if (seen.has(objOid)) continue
-        seen.add(objOid)
+    // set — serve it directly. Only those need reading in full.
+    const record = tip.legacy ? await this._db.get(tip.collection, { name: tip.name }) : null
 
-        const obj = await this.getObject(objOid)
-        if (!obj) continue
+    // Otherwise walk the object graph from the tip — pushes guarantee every
+    // reachable object is in the store, so traversal replaces the stored
+    // list. Missing parents just bound the walk (shallow-seeded repos).
+    const walk = record === null
+    const stack = walk ? [oid] : record.objects.slice().reverse()
 
-        // Empty blobs have null data after round-tripping through compact-encoding
-        const data = obj.data || Buffer.alloc(0)
-
-        if (onLoad) onLoad(obj.size)
-        results.push({ ...obj, data, id: objOid })
-      }
-      return results
-    }
-
-    // Walk the object graph from the tip — pushes guarantee every reachable
-    // object is in the store, so traversal replaces the stored list. Missing
-    // parents just bound the walk (shallow-seeded repos).
-    const results = []
-    const stack = [oid]
     while (stack.length > 0) {
       const cur = stack.pop()
       if (seen.has(cur)) continue
       seen.add(cur)
 
-      const obj = await this.getObject(cur)
+      const obj = await readObject(this._db, cur)
       if (!obj) continue
 
-      const data = obj.data || Buffer.alloc(0)
-      if (onLoad) onLoad(obj.size)
-      results.push({ ...obj, data, id: cur })
+      if (obj.chunks && obj.type !== 'blob') await join(obj)
+      // Empty blobs have null data after round-tripping through compact-encoding
+      if (!obj.chunks && !obj.data) obj.data = EMPTY
+      obj.id = cur
 
-      for (const link of objectLinks({ type: obj.type, data })) stack.push(link)
+      if (walk) for (const link of objectLinks(obj)) stack.push(link)
+      yield obj
     }
-
-    return results
   }
 
   // --- Drive ---
@@ -735,98 +788,114 @@ function headRank(branch) {
   return branch === 'main' ? 0 : branch === 'master' ? 1 : 2
 }
 
+// A Map hands out [oid, object]; so does anything else, through this.
+async function* withOids(objects) {
+  for await (const obj of objects) yield [obj.oid, obj]
+}
+
+// Tree entries by tree oid, read from the store, with the names that must
+// never become paths left out. Keeps the last few trees: a walk down a
+// history reads each one as a commit's tree and again as its child's parent.
+function treeReader(db) {
+  const cache = new Map()
+
+  return async function entries(oid) {
+    const cached = cache.get(oid)
+    if (cached) return cached
+
+    const obj = await getObject(db, oid)
+    const list =
+      obj && obj.type === 'tree' ? treeEntries(obj.data).filter((e) => !isUnsafeName(e.path)) : []
+
+    if (cache.size === TREE_CACHE) cache.delete(cache.keys().next().value)
+    cache.set(oid, list)
+    return list
+  }
+}
+
+async function walkFiles(entries, treeOid, prefix, files) {
+  for (const entry of await entries(treeOid)) {
+    const path = prefix + '/' + entry.path
+    if (entry.type === 'tree') await walkFiles(entries, entry.oid, path, files)
+    else files.push({ path, oid: entry.oid, mode: entry.mode })
+  }
+  return files
+}
+
+// The files under tree `cur` that tree `par` (null for none) doesn't have at
+// the same blob. Only sub-trees that differ are read.
+async function changedFiles(entries, cur, par, prefix, changed) {
+  if (cur === par) return changed
+
+  const before = new Map()
+  if (par !== null) for (const entry of await entries(par)) before.set(entry.path, entry)
+
+  for (const entry of await entries(cur)) {
+    const path = prefix + '/' + entry.path
+    const was = before.get(entry.path)
+    if (entry.type === 'tree') {
+      const sub = was && was.type === 'tree' ? was.oid : null
+      await changedFiles(entries, entry.oid, sub, path, changed)
+    } else if (!was || was.type === 'tree' || was.oid !== entry.oid) {
+      changed.push(path)
+    }
+  }
+  return changed
+}
+
 /**
- * Walk the first-parent commit chain (within `objects`) starting at HEAD,
- * and for each path in HEAD's tree return the metadata of the most recent
- * commit whose tree differs at that path from its parent's tree.
+ * Walk the first-parent commit chain from the tip through the commits of
+ * this push (`sent`), and for each of `paths` (the files of the tip's tree)
+ * find the most recent commit whose tree differs at that path from its
+ * parent's tree. We don't follow merge parents — same heuristic GitHub's
+ * "blame" uses; it keeps cost predictable and matches user expectation.
  *
  * Returns:
  *   - byPath:  Map<path, { author, message, timestamp, commitOid }> for
- *              paths we could attribute within the pack.
+ *              paths we could attribute within the push.
  *   - oldest:  the oldest commit reached, with its `oid` (used as a
- *              fallback by callers when the pack is shallow and a path was
- *              already at its current blob before the pack window).
- *
- * Pure function — does no IO, just inspects the in-memory `objects` map.
+ *              fallback by callers when the push is thin or shallow and a
+ *              path was already at its current blob before it).
  */
-function computeFileLastTouch(objects, headOid, headCommit) {
-  // 1. Walk the chain through first-parent edges, stopping at the first
-  //    parent we don't have. Stash both the parsed commit and the OID.
-  const chain = []
-  let curOid = headOid
-  let cur = headCommit
-  for (;;) {
-    chain.push({ oid: curOid, commit: cur })
-    if (!cur.parents || cur.parents.length === 0) break
-    const parentOid = cur.parents[0]
-    const parentObj = objects.get(parentOid)
-    if (!parentObj || parentObj.type !== 'commit') break
-    cur = parseCommit(parentObj.data)
-    curOid = parentOid
+async function fileLastTouch(db, entries, sent, tipOid, tip, paths) {
+  const byPath = new Map()
+  const remaining = new Set(paths)
+  let oid = tipOid
+  let commit = tip
+
+  const credit = (changed) => {
+    const meta = {
+      author: commit.author,
+      message: commit.message,
+      timestamp: commit.timestamp,
+      commitOid: oid
+    }
+    for (const path of changed) {
+      if (remaining.delete(path)) byPath.set(path, meta)
+    }
   }
 
-  // 2. Flatten each commit's tree into a path → oid map. walkTree handles
-  //    nested trees and skips missing sub-trees gracefully (returns []),
-  //    which is what we want for incremental packs that don't re-send
-  //    unchanged sub-trees.
-  const treeMaps = chain.map(({ commit }) => {
-    const map = new Map()
-    for (const f of walkTree(objects, commit.tree, '')) {
-      map.set(f.path, f.oid)
-    }
-    return map
-  })
-
-  // 3. Walk newest-first; record the change point for each HEAD path.
-  const byPath = new Map()
-  const remaining = new Set(treeMaps[0].keys())
-
-  for (let i = 0; i < chain.length && remaining.size > 0; i++) {
-    const cur = treeMaps[i]
-    const isLast = i === chain.length - 1
-    const par = isLast ? null : treeMaps[i + 1]
+  while (remaining.size > 0) {
     // True root commit (no parents at all) — files appearing here are new,
     // so they're attributed to this commit. We must NOT do the same when
-    // we ran out of pack (parents exist, just not in pack), or we'd make
-    // up an attribution that isn't real.
-    const isRoot = isLast && (!chain[i].commit.parents || chain[i].commit.parents.length === 0)
-
-    for (const path of remaining) {
-      const curOidAtPath = cur.get(path)
-      if (curOidAtPath === undefined) continue
-
-      if (par) {
-        const parOidAtPath = par.get(path)
-        if (parOidAtPath !== curOidAtPath) {
-          byPath.set(path, {
-            author: chain[i].commit.author,
-            message: chain[i].commit.message,
-            timestamp: chain[i].commit.timestamp,
-            commitOid: chain[i].oid
-          })
-          remaining.delete(path)
-        }
-      } else if (isRoot) {
-        byPath.set(path, {
-          author: chain[i].commit.author,
-          message: chain[i].commit.message,
-          timestamp: chain[i].commit.timestamp,
-          commitOid: chain[i].oid
-        })
-        remaining.delete(path)
-      }
-      // else: shallow boundary — caller falls back to existing row /
-      // oldest-commit metadata.
+    // we ran out of push (parents exist, just not in it), or we'd make up
+    // an attribution that isn't real.
+    if (commit.parents.length === 0) {
+      credit(await changedFiles(entries, commit.tree, null, '', []))
+      break
     }
+
+    const parentOid = commit.parents[0]
+    const parent = sent.has(parentOid) ? await getObject(db, parentOid) : null
+    if (!parent || parent.type !== 'commit') break
+
+    const parentCommit = parseCommit(parent.data)
+    credit(await changedFiles(entries, commit.tree, parentCommit.tree, '', []))
+    oid = parentOid
+    commit = parentCommit
   }
 
-  return {
-    byPath,
-    oldest: {
-      ...chain[chain.length - 1].commit,
-      oid: chain[chain.length - 1].oid
-    }
-  }
+  return { byPath, oldest: { ...commit, oid } }
 }
 
 module.exports = {

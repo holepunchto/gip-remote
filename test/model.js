@@ -87,7 +87,7 @@ test('push rejects a ref whose tree and blobs are in neither the push nor the st
   t.is(err.code, 'MISSING_OBJECTS')
   t.alike(err.missing, [tree.oid])
   t.alike(await remote.getAllRefs(), [], 'no ref without its objects')
-  t.is(await remote.getObject(commit.oid), null, 'nothing stored')
+  t.is(await remote.getRefObjects(commit.oid).then((objs) => objs.length), 0, 'nothing to fetch')
 
   await remote.push('main', commit.oid, git.toObjects([blob, tree, commit]))
   t.is((await remote.getBranchRef('main')).oid, commit.oid, 'lands once complete')

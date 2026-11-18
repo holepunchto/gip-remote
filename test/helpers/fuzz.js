@@ -426,8 +426,10 @@ async function compareDrive(remote, model, name) {
   check((await drive.entry('/nope')) === null, `${what} entry of a missing path must be null`)
 }
 
-// Every public read of the Remote against the model.
-async function compare(remote, model, u) {
+// Every public read of the Remote against the model. `opts.unreferenced` is
+// a set of oids the store may hold although the model doesn't: what a push
+// that died wrote before its ref moved.
+async function compare(remote, model, u, opts = {}) {
   same(sortRefs(await remote.getAllRefs()), sortRefs(model.refs()), 'getAllRefs')
   same(await remote.getHead(), model.head, 'getHead')
 
@@ -441,7 +443,8 @@ async function compare(remote, model, u) {
     const got = await remote.getObject(oid)
     const what = `getObject(${u.label(oid)})`
     if (!model.objects.has(oid)) {
-      check(got === null, `${what} must be null`)
+      const allowed = opts.unreferenced && opts.unreferenced.has(oid)
+      check(got === null || allowed, `${what} must be null`)
       continue
     }
     check(got !== null, `${what} is missing`)

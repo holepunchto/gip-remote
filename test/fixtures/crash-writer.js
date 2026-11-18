@@ -1,11 +1,12 @@
 // Applies a generated script of mutations to the Remote in `dir`, from op
-// `start` on, logging each op's start and completion synchronously so the
-// parent knows how far it got when it kills this process.
-const { appendFileSync } = require('fs')
+// `start` on and from the model state in `state`, logging each op's start
+// and completion synchronously so the parent knows how far it got when it
+// kills this process.
+const { appendFileSync, readFileSync } = require('fs')
 const Model = require('../helpers/model')
-const { generate, expect, apply, Sut } = require('../helpers/fuzz')
+const { generate, apply, Sut } = require('../helpers/fuzz')
 
-const [dir, log, seed, length, start] = Bare.argv.slice(2)
+const [dir, log, seed, length, start, state] = Bare.argv.slice(2)
 
 main()
 
@@ -14,9 +15,7 @@ async function main() {
     length: Number(length),
     mutationsOnly: true
   })
-  const model = new Model(universe.meta)
-  for (let i = 0; i < Number(start); i++) expect(model, universe, script[i])
-  model.reopen()
+  const model = Model.from(universe.meta, universe.objects, JSON.parse(readFileSync(state)))
 
   const sut = new Sut(dir)
   await sut.open()

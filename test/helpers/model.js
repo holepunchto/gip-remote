@@ -30,27 +30,25 @@ module.exports = class Model {
     return []
   }
 
-  // `ref` as Remote.push takes it: a branch name, or tags/<name>
+  // `ref` as Remote.push takes it: a branch name, or tags/<name>. The
+  // objects land whether or not the ref then moves.
   push(ref, oid, objects) {
-    const has = (o) => objects.has(o) || this.objects.has(o)
+    for (const [o, obj] of objects) {
+      if (!this.objects.has(o)) this.objects.set(o, obj)
+    }
 
     for (const o of objects.keys()) {
-      if (this.objects.has(o)) continue
       for (const link of this.links(o)) {
-        if (!has(link)) throw new Error('Missing object: ' + link)
+        if (!this.objects.has(link)) throw new Error('Missing object: ' + link)
       }
     }
 
     let cur = oid
-    if (!has(cur)) throw new Error('Missing object: ' + cur)
+    if (!this.objects.has(cur)) throw new Error('Missing object: ' + cur)
     while (this.meta.get(cur).type === 'tag') cur = this.meta.get(cur).object
 
     const tag = ref.startsWith('tags/')
     if (!tag && this.meta.get(cur).type !== 'commit') throw new Error('Expected commit: ' + cur)
-
-    for (const [o, obj] of objects) {
-      if (!this.objects.has(o)) this.objects.set(o, obj)
-    }
 
     if (tag) {
       this.tags.set(ref.slice(5), oid)
@@ -61,6 +59,25 @@ module.exports = class Model {
     if (this.head === null || (this.head === this.auto && rank(ref) < rank(this.head))) {
       this.head = this.auto = ref
     }
+  }
+
+  // What a writer needs to carry on from this state in another process
+  toJSON() {
+    return {
+      objects: [...this.objects.keys()],
+      branches: [...this.branches],
+      tags: [...this.tags],
+      head: this.head
+    }
+  }
+
+  static from(meta, objects, json) {
+    const model = new Model(meta)
+    for (const oid of json.objects) model.objects.set(oid, objects.get(oid))
+    model.branches = new Map(json.branches)
+    model.tags = new Map(json.tags)
+    model.head = json.head
+    return model
   }
 
   reopen() {

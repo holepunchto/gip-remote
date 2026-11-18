@@ -2,7 +2,7 @@ const test = require('brittle')
 const tmp = require('test-tmp')
 const env = require('bare-env')
 const { spawn } = require('child_process')
-const { readFileSync, existsSync } = require('fs')
+const { readFileSync, writeFileSync, existsSync } = require('fs')
 const { join } = require('path')
 const Model = require('./helpers/model')
 const { prng, generate, expect, compare, Sut } = require('./helpers/fuzz')
@@ -15,10 +15,10 @@ const iters = Number(env.GIP_FUZZ_ITERS || 1)
 const first = env.GIP_SEED ? Number(env.GIP_SEED) : iters > 1 ? Date.now() % 2 ** 31 : 1
 
 test(
-  'crash: a SIGKILLed writer leaves the last acknowledged state, or the next one',
+  'crash: a SIGKILLed writer leaves every ref where it was, or where the push in flight put it',
   { timeout: 0 },
   async (t) => {
-    const stats = { kills: 0, midOp: 0, landed: 0 }
+    const stats = { kills: 0, midOp: 0, landed: 0, unreferenced: 0 }
     for (let i = 0; i < iters; i++) {
       if (!(await crashes(t, first + i, stats))) return
     }
@@ -37,9 +37,11 @@ async function crashes(t, seed, stats) {
 
   for (let round = 0; start < script.length; round++) {
     const log = join(root, `round-${round}.log`)
+    const state = join(root, `round-${round}.json`)
+    writeFileSync(state, JSON.stringify(model))
     const killAt = start + rng.int(MAX_OPS_PER_RUN)
     const delay = rng.int(10)
-    const { code, signal } = await write([dir, log, seed, LENGTH, start], killAt, delay)
+    const { code, signal } = await write([dir, log, seed, LENGTH, start, state], killAt, delay)
     if (!signal && code !== 0) {
       t.fail(`GIP_SEED=${seed} round ${round}: the writer exited with code ${code}`)
       return false
@@ -55,7 +57,10 @@ async function crashes(t, seed, stats) {
 
     for (let i = start; i <= done; i++) expect(model, universe, script[i])
     const next = model.clone()
-    if (started > done) expect(next, universe, script[started])
+    // A push writes its objects before it moves its ref: killed in between,
+    // it leaves the old refs and some of those objects.
+    const inFlight = started > done ? expect(next, universe, script[started]) : null
+    const unreferenced = new Set(inFlight && inFlight.objects ? inFlight.objects.keys() : [])
     // the next round is a new process
     model.reopen()
     next.reopen()
@@ -66,8 +71,13 @@ async function crashes(t, seed, stats) {
     const sut = new Sut(dir)
     await sut.open()
     try {
-      const old = await compare(sut.remote, model, universe).catch((err) => err)
+      const old = await compare(sut.remote, model, universe, { unreferenced }).catch((err) => err)
       if (!old) {
+        for (const oid of unreferenced) {
+          if (model.objects.has(oid) || !(await sut.remote.getObject(oid))) continue
+          model.objects.set(oid, universe.objects.get(oid))
+          stats.unreferenced++
+        }
         start = done + 1
       } else if (
         started > done &&
