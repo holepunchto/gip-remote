@@ -1,9 +1,11 @@
 const test = require('brittle')
 const tmp = require('test-tmp')
 const { spawnSync } = require('child_process')
-const { existsSync, readFileSync } = require('fs')
+const { existsSync, readFileSync, readdirSync, mkdirSync, promises: fsp } = require('fs')
 const { join } = require('path')
-const git = require('rebuild-git')
+const crypto = require('bare-crypto')
+const b4a = require('b4a')
+const git = require('./helpers/git')
 
 const { toDisk } = require('../lib/git')
 
@@ -15,8 +17,9 @@ async function createGitDir(t) {
   return dir
 }
 
-async function computeOid(type, data) {
-  return git.writeObject({ type, object: data, dryrun: true })
+function computeOid(type, data) {
+  const header = b4a.from(`${type} ${data.byteLength}\0`)
+  return crypto.createHash('sha1').update(header).update(data).digest('hex')
 }
 
 function gitExec(args, opts) {
@@ -173,9 +176,7 @@ test('toDisk writes a commit object', async (t) => {
   const blobData = Buffer.from('readme content')
   const blobOid = await computeOid('blob', blobData)
 
-  const { GitTree } = require('rebuild-git')
-  const tree = new GitTree([{ mode: '100644', path: 'README.md', oid: blobOid, type: 'blob' }])
-  const treeData = tree.toObject()
+  const treeData = git.tree([{ mode: '100644', name: 'README.md', oid: blobOid }]).data
   const treeOid = await computeOid('tree', treeData)
 
   const commitText = [
@@ -223,9 +224,7 @@ test('toDisk writes refs', async (t) => {
   const data = Buffer.from('ref test')
   const blobOid = await computeOid('blob', data)
 
-  const { GitTree } = require('rebuild-git')
-  const tree = new GitTree([{ mode: '100644', path: 'file.txt', oid: blobOid, type: 'blob' }])
-  const treeData = tree.toObject()
+  const treeData = git.tree([{ mode: '100644', name: 'file.txt', oid: blobOid }]).data
   const treeOid = await computeOid('tree', treeData)
 
   const commitText = [
@@ -275,9 +274,7 @@ test('toDisk writes refs and HEAD together', async (t) => {
   const data = Buffer.from('full test')
   const blobOid = await computeOid('blob', data)
 
-  const { GitTree } = require('rebuild-git')
-  const tree = new GitTree([{ mode: '100644', path: 'file.txt', oid: blobOid, type: 'blob' }])
-  const treeData = tree.toObject()
+  const treeData = git.tree([{ mode: '100644', name: 'file.txt', oid: blobOid }]).data
   const treeOid = await computeOid('tree', treeData)
 
   const commitText = [
@@ -312,4 +309,238 @@ test('toDisk writes refs and HEAD together', async (t) => {
   // Can read the tree via HEAD
   const treeFromHead = gitExec(['cat-file', '-p', 'HEAD^{tree}'], { cwd: dir })
   t.ok(treeFromHead.includes('file.txt'))
+})
+
+// --- Where things land ---
+
+// A commit over `count` distinct blobs, as toDisk takes them
+function history(count) {
+  const blobs = []
+  for (let i = 0; i < count; i++) blobs.push(git.blob('blob ' + i))
+  const tree = git.tree(blobs.map((b, i) => ({ mode: '100644', name: `f${i}.txt`, oid: b.oid })))
+  const commit = git.commit({ tree: tree.oid })
+  const objects = [...blobs, tree, commit].map((o) => ({ ...o, id: o.oid }))
+  return { commit, objects }
+}
+
+function fsck(gitDir) {
+  const result = spawnSync('git', ['--git-dir', gitDir, 'fsck', '--strict', '--no-dangling'])
+  return result.status === 0 ? '' : result.stderr.toString() || 'git fsck failed'
+}
+
+function leftovers(dir) {
+  return readdirSync(dir, { recursive: true }).filter((name) => name.includes('tmp_'))
+}
+
+for (const count of [3, 500]) {
+  const how = count < 100 ? 'loose' : 'packed'
+
+  test(`toDisk writes into a bare repository, ${how}`, async (t) => {
+    const dir = await tmp(t)
+    const bare = join(dir, 'repo.git')
+    gitExec(['init', '--bare', bare])
+    const { commit, objects } = history(count)
+
+    await toDisk({ gitDir: bare, objects, refs: { 'refs/heads/main': commit.oid } })
+
+    t.absent(existsSync(join(dir, '.git')), 'nothing beside the repository')
+    t.absent(existsSync(join(bare, '.git')), 'nothing nested in it')
+    t.is(fsck(bare), '')
+    t.is(gitExec(['--git-dir', bare, 'rev-parse', 'main']).trim(), commit.oid)
+    t.is(
+      gitExec(['--git-dir', bare, 'rev-list', '--objects', 'main']).split('\n').length - 1,
+      count + 2
+    )
+    t.alike(leftovers(bare), [], 'no temporary files left')
+    t.is(readdirSync(join(bare, 'objects', 'pack')).length, how === 'packed' ? 2 : 0)
+  })
+
+  test(`toDisk follows a .git file to a separate git dir, ${how}`, async (t) => {
+    const dir = await tmp(t)
+    const work = join(dir, 'work')
+    const elsewhere = join(dir, 'elsewhere')
+    gitExec(['init', '--separate-git-dir', elsewhere, work])
+    const { commit, objects } = history(count)
+
+    await toDisk({ gitDir: elsewhere, objects })
+    t.is(fsck(elsewhere), '', 'given the git dir')
+    t.is(gitExec(['cat-file', '-t', commit.oid], { cwd: work }).trim(), 'commit')
+
+    const more = history(count + 1)
+    await toDisk({ gitDir: join(work, '.git'), objects: more.objects })
+    t.is(
+      gitExec(['cat-file', '-t', more.commit.oid], { cwd: work }).trim(),
+      'commit',
+      'given the .git file'
+    )
+    t.ok(
+      readFileSync(join(work, '.git'), 'utf8').startsWith('gitdir: '),
+      'the .git file stays a file'
+    )
+  })
+
+  test(`toDisk writes a linked worktree's objects and refs to the common dir, ${how}`, async (t) => {
+    const dir = await tmp(t)
+    const main = join(dir, 'main')
+    const linked = join(dir, 'linked')
+    mkdirSync(main)
+    gitExec(['init', '-b', 'main'], { cwd: main })
+    gitExec(
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-m', 'base'],
+      {
+        cwd: main
+      }
+    )
+    gitExec(['worktree', 'add', '-b', 'side', linked], { cwd: main })
+    const gitDir = gitExec(['rev-parse', '--absolute-git-dir'], { cwd: linked }).trim()
+    t.ok(gitDir.includes('worktrees'), 'GIT_DIR of a linked worktree')
+    const { commit, objects } = history(count)
+
+    await toDisk({ gitDir, objects, refs: { 'refs/heads/fetched': commit.oid } })
+
+    t.absent(existsSync(join(gitDir, 'objects')), 'no objects in the worktree git dir')
+    t.absent(existsSync(join(gitDir, 'refs', 'heads')), 'no branches there either')
+    t.is(gitExec(['rev-parse', 'fetched'], { cwd: linked }).trim(), commit.oid)
+    t.is(gitExec(['rev-parse', 'fetched'], { cwd: main }).trim(), commit.oid)
+    t.is(fsck(join(main, '.git')), '')
+  })
+}
+
+test('toDisk never leaves a partial object when an object is bad', async (t) => {
+  for (const count of [3, 500]) {
+    const dir = await createGitDir(t)
+    const { objects } = history(count)
+    objects[objects.length - 1] = { ...objects[objects.length - 1], id: 'deadbeef'.repeat(5) }
+
+    await t.exception(toDisk({ gitDir: join(dir, '.git'), objects }), /OID mismatch/)
+    t.alike(leftovers(join(dir, '.git')), [], 'no temporary files left')
+    t.is(fsck(join(dir, '.git')), '', 'what is there is whole')
+  }
+})
+
+test('toDisk writes trees byte for byte', async (t) => {
+  const dir = await createGitDir(t)
+  const blob = git.blob('x')
+  const tree = git.tree([
+    { mode: '100664', name: 'a', oid: blob.oid },
+    { mode: '040000', name: 'b', oid: git.tree([]).oid }
+  ])
+  const objects = [blob, git.tree([]), tree].map((o) => ({ ...o, id: o.oid }))
+
+  await toDisk({ gitDir: join(dir, '.git'), objects })
+  const raw = spawnSync('git', ['cat-file', 'tree', tree.oid], { cwd: dir })
+  t.ok(b4a.equals(raw.stdout, tree.data))
+})
+
+test('toDisk takes an async iterable and packs it as it comes', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+  const { commit, objects } = history(500)
+
+  async function* stream() {
+    // `oid` is as good as `id`
+    for (const { oid, type, size, data } of objects) yield { oid, type, size, data }
+  }
+  await toDisk({ gitDir: bare, objects: stream(), refs: { 'refs/heads/main': commit.oid } })
+
+  t.is(fsck(bare), '')
+  t.is(gitExec(['--git-dir', bare, 'rev-list', '--objects', 'main']).split('\n').length - 1, 502)
+  t.is(readdirSync(join(bare, 'objects', 'pack')).length, 2, 'one pack and its index')
+  t.alike(leftovers(bare), [])
+
+  async function* few() {
+    yield* history(3).objects
+  }
+  await toDisk({ gitDir: bare, objects: few() })
+  t.is(readdirSync(join(bare, 'objects', 'pack')).length, 2, 'a few objects stay loose')
+  t.is(fsck(bare), '')
+
+  async function* none() {}
+  await toDisk({ gitDir: bare, objects: none() })
+  t.is(fsck(bare), '', 'an empty stream writes nothing')
+})
+
+test('toDisk writes an object that comes in chunks without joining it', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+
+  const data = b4a.alloc(3 * 1024 * 1024 + 123)
+  for (let i = 0; i < data.byteLength; i++) data[i] = (i * 31 + (i >> 9)) % 251
+  const blob = git.blob(data)
+  const empty = git.blob('')
+
+  async function* chunks(size) {
+    for (let i = 0; i < data.byteLength; i += size) yield data.subarray(i, i + size)
+  }
+  async function* none() {}
+  const chunked = (size) => [
+    { id: blob.oid, type: 'blob', size: blob.size, chunks: chunks(size) },
+    { id: empty.oid, type: 'blob', size: 0, chunks: none() }
+  ]
+
+  await toDisk({ gitDir: bare, objects: chunked(1024 * 1024) })
+  t.is(fsck(bare), '')
+  const out = spawnSync('git', ['--git-dir', bare, 'cat-file', 'blob', blob.oid], {
+    maxBuffer: data.byteLength * 2
+  })
+  t.ok(b4a.equals(out.stdout, data), 'git reads back the same bytes')
+  t.is(gitExec(['--git-dir', bare, 'cat-file', '-s', empty.oid]).trim(), '0')
+
+  const short = [{ id: blob.oid, type: 'blob', size: blob.size + 1, chunks: chunks(65536) }]
+  await t.exception(toDisk({ gitDir: bare, objects: short }), /Size mismatch/)
+  const wrong = [{ id: 'deadbeef'.repeat(5), type: 'blob', size: blob.size, chunks: chunks(65536) }]
+  await t.exception(toDisk({ gitDir: bare, objects: wrong }), /OID mismatch/)
+  t.alike(leftovers(bare), [], 'a bad object leaves nothing behind')
+})
+
+test('a pack and its index are whole before they are named, the index last', async (t) => {
+  const dir = await tmp(t)
+  const bare = join(dir, 'repo.git')
+  gitExec(['init', '--bare', bare])
+  const { commit, objects } = history(500)
+
+  // Every rename, with what the files it names held at that moment
+  const renames = []
+  const fs = {
+    ...fsp,
+    async rename(from, to) {
+      const pack = to.replace(/\.idx$/, '.pack')
+      renames.push({
+        to: to.slice(to.lastIndexOf('.')),
+        size: readFileSync(from).byteLength,
+        packNamed: existsSync(pack),
+        open: readdirSync(join(bare, 'objects', 'pack')).filter((f) => f.startsWith('tmp_')).length
+      })
+      await fsp.rename(from, to)
+    }
+  }
+
+  async function* stream() {
+    yield* objects
+  }
+  await toDisk({ gitDir: bare, objects: stream(), fs })
+
+  t.alike(
+    renames.map((r) => r.to),
+    ['.pack', '.idx'],
+    'the pack is named first, the index last'
+  )
+  t.is(renames[0].open, 2, 'the index is already written when the pack is named')
+  t.ok(renames[1].packNamed, 'the pack has its name when the index gets one')
+
+  // what a process killed right now leaves behind
+  const packDir = join(bare, 'objects', 'pack')
+  const files = readdirSync(packDir).sort()
+  t.is(files.length, 2)
+  t.ok(files[0].endsWith('.idx') && files[1].endsWith('.pack'))
+  t.is(readFileSync(join(packDir, files[0])).byteLength, renames[1].size, 'index complete')
+  t.is(readFileSync(join(packDir, files[1])).byteLength, renames[0].size, 'pack complete')
+
+  const verify = spawnSync('git', ['verify-pack', '-v', join(packDir, files[0])])
+  t.is(verify.status, 0, verify.stderr.toString())
+  const full = spawnSync('git', ['--git-dir', bare, 'fsck', '--strict', '--full', '--no-dangling'])
+  t.is(full.status, 0, full.stderr.toString())
+  t.is(gitExec(['--git-dir', bare, 'cat-file', '-t', commit.oid]).trim(), 'commit')
 })

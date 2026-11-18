@@ -19,10 +19,42 @@ interface Ref {
   ref: string
   oid: string
   symref?: string
+  peeled?: string
+}
+
+type PushObject = { type: string; size: number; data: Buffer }
+type PushedObject = {
+  oid: string
+  type: string
+  size: number
+  data?: Buffer | null
+  chunks?: AsyncIterable<Buffer> | Iterable<Buffer>
+}
+type PushObjects = Map<string, PushObject> | Iterable<PushedObject> | AsyncIterable<PushedObject>
+
+interface RefOpts {
+  expect?: string | null
+}
+
+interface RemoteError extends Error {
+  code: 'STALE_REF' | 'UNSUPPORTED_REF' | 'MISSING_OBJECTS' | 'DELETE_HEAD'
+  expected?: string | null
+  actual?: string | null
+  missing?: string[]
 }
 
 interface RefObject extends GitObject {
   id: string
+}
+
+// As refObjects yields them: a blob over 8 MiB has `chunks` and no `data`
+interface StreamedObject {
+  id: string
+  oid: string
+  type: string
+  size: number
+  data: Buffer | null
+  chunks?: AsyncIterable<Buffer>
 }
 
 declare class Remote {
@@ -38,11 +70,9 @@ declare class Remote {
   ready(): Promise<void>
   close(): Promise<void>
 
-  push(
-    branch: string,
-    commitOid: string,
-    objects: Map<string, { type: string; size: number; data: Buffer }>
-  ): Promise<void>
+  push(name: string, oid: string, objects: PushObjects, opts?: RefOpts): Promise<void>
+  pushRef(ref: string, oid: string, objects: PushObjects, opts?: RefOpts): Promise<void>
+  deleteRef(ref: string, opts?: RefOpts): Promise<boolean>
 
   getHead(): Promise<string | null>
   setHead(branch: string): Promise<void>
@@ -50,11 +80,18 @@ declare class Remote {
   getAllRefs(): Promise<Ref[]>
   getBranchRef(branch: string): Promise<Ref | null>
   deleteBranch(branchName: string): Promise<boolean>
+  deleteTag(tagName: string): Promise<boolean>
 
   getObject(oid: string): Promise<GitObject | null>
-  getRefObjects(commitOid: string, onLoad?: (size: number) => void): Promise<RefObject[]>
+  getRefObjects(
+    oid: string,
+    onLoad?: ((size: number) => void) | null,
+    opts?: { seen?: Set<string> }
+  ): Promise<RefObject[]>
 
-  toDrive(branch: string): Promise<RemoteDrive | null>
+  refObjects(oid: string, opts?: { seen?: Set<string> }): AsyncIterableIterator<StreamedObject>
+
+  toDrive(name: string): Promise<RemoteDrive | null>
 
   update(): Promise<void>
   waitForPeers(): Promise<void>
@@ -99,9 +136,21 @@ declare const GitPearLink: {
   serialize(o: ParsedGitPearLink): string
 }
 
+type DiskObject = {
+  id?: string
+  oid?: string
+  type: string
+  size: number
+  data?: Buffer | null
+  chunks?: AsyncIterable<Buffer> | Iterable<Buffer>
+}
+
 interface ToDiskOpts {
   gitDir: string
-  objects: Array<{ type: string; id: string; size: number; data: Buffer }>
+  objects:
+    | Array<{ type: string; id: string; size: number; data: Buffer }>
+    | Iterable<DiskObject>
+    | AsyncIterable<DiskObject>
   refs?: Record<string, string>
   head?: string
   objectFormat?: 'sha1'
@@ -140,6 +189,10 @@ export type {
   GitObject,
   Ref,
   RefObject,
+  StreamedObject,
+  RefOpts,
+  RemoteError,
+  PushObjects,
   DriveEntry,
   ParsedGitPearLink,
   ToDiskOpts,
