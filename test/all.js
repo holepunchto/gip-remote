@@ -8,6 +8,7 @@ async function runTests() {
   test.pause()
 
   await import('./basic.js')
+  await import('./chunk-boundaries.js')
   await import('./compression.js')
   await import('./crash.js')
   await import('./drive.js')
