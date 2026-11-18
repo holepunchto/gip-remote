@@ -8,11 +8,16 @@ async function runTests() {
   test.pause()
 
   await import('./basic.js')
+  await import('./chunk-boundaries.js')
   await import('./compression.js')
+  await import('./crash.js')
   await import('./drive.js')
   await import('./large-objects.js')
   await import('./link.js')
+  await import('./model.js')
+  await import('./namespaces.js')
   await import('./replicate.js')
+  await import('./replicate-chaos.js')
   await import('./tags.js')
   await import('./to-disk.js')
 

@@ -63,6 +63,8 @@
   "homepage": "https://github.com/holepunchto/gip-remote",
   "devDependencies": {
     "b4a": "^1.8.1",
+    "bare-crypto": "^1.15.3",
+    "bare-env": "^3.0.1",
     "bare-subprocess": "^6.1.0",
     "brittle": "^4.1.0",
     "corestore": "^7.11.1",
