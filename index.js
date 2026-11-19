@@ -2,7 +2,6 @@ const ReadyResource = require('ready-resource')
 const HyperDB = require('hyperdb')
 const Hyperbee = require('hyperbee2')
 const ScopeLock = require('scope-lock')
-const z32 = require('z32')
 const def = require('./schema/hyperdb/index')
 const RemoteDrive = require('./lib/drive')
 const cacheBlocks = require('./lib/block-cache')
@@ -38,10 +37,17 @@ const INDEXED = ''
 const BLOCK_CACHE_BYTES = 32 * 1024 * 1024
 const EMPTY = Buffer.alloc(0)
 
+function toVersion(o) {
+  const length = o?.length ?? -1
+  if (length < 0) return null
+  return { fork: o.fork ?? 0, length }
+}
+
 class Remote extends ReadyResource {
   _db = null
   _link = null
   _name = null
+  _version = null
   _timeout = 0
   _writeLock = new ScopeLock()
   // Oids this session knows are in the store with everything they link to.
@@ -64,24 +70,57 @@ class Remote extends ReadyResource {
     let config
     if (typeof this._link === 'string') {
       this._name = this._link
-      config = { core: store.get({ name: this._link }), autoUpdate: true }
+      config = { core: store.get({ name: this._link }) }
     } else if (this._link.drive) {
       this._name = this._link.pathname?.split('/').slice(1)[0]
-      config = { key: this._link.drive.key, autoUpdate: true }
+      config = { key: this._link.drive.key }
+      this._version = toVersion(this._link.drive)
     } else {
-      this._name = this._link.name
-      config = { ...this._link, autoUpdate: true }
+      const { name, fork, length, ...rest } = this._link
+      this._name = name
+      config = rest
+      this._version = toVersion({ fork, length })
     }
 
-    const bee = new Hyperbee(store, config)
+    // A pin must not follow the log: autoUpdate would move the view off the
+    // pinned length the moment the writer appends.
+    const autoUpdate = this._version === null
+    const length = this._version === null ? -1 : this._version.length
+
+    const bee = new Hyperbee(store, { ...config, autoUpdate })
     cacheBlocks(bee.core, BLOCK_CACHE_BYTES)
-    this._db = HyperDB.bee2(bee, def, { autoUpdate: true })
+    this._db = HyperDB.bee2(bee, def, { autoUpdate, length })
 
     this._timeout = opts.timeout || 240_000
   }
 
   async _open() {
     await this._db.ready()
+    if (this._version !== null) this._assertVersion()
+  }
+
+  // A pinned remote opens at its version or not at all, so the caller
+  // replicates the log that far first. Blocks still arrive lazily — this is
+  // about the length of the log, not the data in it.
+  _assertVersion() {
+    const core = this._db.core
+    const { fork, length } = this._version
+
+    if (core.fork !== fork) {
+      throw new Error(`Fork mismatch: pinned to fork ${fork}, log is at fork ${core.fork}`)
+    }
+
+    if (core.length < length) {
+      throw new Error(
+        `Version not available: pinned to ${fork}.${length}, log is ${core.fork}.${core.length}`
+      )
+    }
+  }
+
+  _assertUnpinned(action) {
+    if (this._version === null) return
+    const { fork, length } = this._version
+    throw new Error(`Cannot ${action}: remote is pinned to ${fork}.${length}`)
   }
 
   async _close() {
@@ -141,9 +180,22 @@ class Remote extends ReadyResource {
     return this._db.core.peers.length
   }
 
+  get version() {
+    return this._version
+  }
+
+  get pinned() {
+    return this._version !== null
+  }
+
   get url() {
-    const head = this._db.db.head()
-    return `git+pear://0.${head.length}.${z32.encode(head.key)}/${this.name}`
+    // null fork and length serialize to an unversioned link.
+    const { fork = null, length = null } = this._version ?? {}
+    return GitPearLink.serialize({
+      protocol: 'git+pear:',
+      pathname: `/${this.name}`,
+      drive: { key: this.key, fork, length }
+    })
   }
 
   // --- Objects ---
@@ -160,6 +212,7 @@ class Remote extends ReadyResource {
   }
 
   async setHead(branch) {
+    this._assertUnpinned('set head')
     return this._transaction(
       (w) => w.tx.insert('@gip/head', { branch }),
       () => (this._autoHead = null)
@@ -197,6 +250,7 @@ class Remote extends ReadyResource {
   }
 
   async deleteBranch(branchName) {
+    this._assertUnpinned('delete branch')
     return this._transaction((w) => this._deleteBranch(w, branchName))
   }
 
@@ -229,6 +283,7 @@ class Remote extends ReadyResource {
   }
 
   async deleteTag(tagName) {
+    this._assertUnpinned('delete tag')
     return this._transaction((w) => this._deleteTag(w, tagName))
   }
 
@@ -306,6 +361,8 @@ class Remote extends ReadyResource {
   // with everything it reaches; a push that fails or dies half way leaves at
   // most objects no ref points at, which the next push reuses.
   async pushRef(ref, oid, objects, opts = {}) {
+    this._assertUnpinned('push')
+
     const target = parseRef(ref)
 
     // One push at a time, start to end: a second one may count on the
@@ -747,6 +804,7 @@ class Remote extends ReadyResource {
   // --- Peer discovery ---
 
   async update() {
+    if (this._version !== null) return
     await this._db.update()
   }
 

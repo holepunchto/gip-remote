@@ -3,7 +3,7 @@ const createTestnet = require('hyperdht/testnet')
 const tmp = require('test-tmp')
 const b4a = require('b4a')
 const { spawnSync } = require('child_process')
-const { createRemote, createStore } = require('./helpers')
+const { createRemote, createStore, repoLink } = require('./helpers')
 const git = require('./helpers/git')
 const { toDisk } = require('../lib/git')
 const { Remote } = require('..')
@@ -161,7 +161,7 @@ test('a peer replicates and reads a large object over the swarm', async (t) => {
   const { objects, blob } = makeBigRepo()
   await r1.push('main', OID_COMMIT, objects)
 
-  const r2 = await createRemote(t, { link: r1.url, bootstrap })
+  const r2 = await createRemote(t, { link: repoLink(r1), bootstrap })
   t.alike(r1.key, r2.key, 'same core')
 
   const got = await r2.getObject(OID_BIG_BLOB)

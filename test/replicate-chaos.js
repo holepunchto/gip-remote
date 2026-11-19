@@ -2,7 +2,7 @@ const test = require('brittle')
 const createTestnet = require('hyperdht/testnet')
 const Hyperswarm = require('hyperswarm')
 const env = require('bare-env')
-const { createStore } = require('./helpers')
+const { createStore, repoLink } = require('./helpers')
 const Model = require('./helpers/model')
 const git = require('./helpers/git')
 const { prng, generate, apply, compare } = require('./helpers/fuzz')
@@ -37,7 +37,7 @@ test('getRefObjects on a replica leaves later reads working', async (t) => {
     tips.push(commit.oid)
   }
 
-  const reader = await createPeer(t, bootstrap, writer.remote.url)
+  const reader = await createPeer(t, bootstrap, repoLink(writer.remote))
   await reader.remote.core.update({ wait: true })
 
   await t.execution(reader.remote.getRefObjects(tips[0]))
@@ -53,7 +53,7 @@ async function replicates(t, bootstrap, seed, stats) {
   const model = new Model(universe.meta)
 
   const writer = await createPeer(t, bootstrap, 'chaos-' + seed)
-  const reader = await createPeer(t, bootstrap, writer.remote.url)
+  const reader = await createPeer(t, bootstrap, repoLink(writer.remote))
 
   let writing = true
   let failure = null

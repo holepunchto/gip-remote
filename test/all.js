@@ -18,6 +18,7 @@ async function runTests() {
   await import('./memory.js')
   await import('./model.js')
   await import('./namespaces.js')
+  await import('./pinned.js')
   await import('./refs.js')
   await import('./replicate.js')
   await import('./replicate-chaos.js')

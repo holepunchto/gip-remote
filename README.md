@@ -8,6 +8,47 @@ Git objects are stored raw, and rebuilt to file when needed. Built for the [Git+
 npm install gip-remote
 ```
 
+## Pinned versions
+
+A `git+pear://` link may carry a version — `<fork>.<length>`, a position in the append-only log,
+where `fork` is truncation count and `length` append count:
+
+```
+git+pear://0.42.z17anrqrtwgjxpig3oiohoxr7m9eijz3acpytiay6xku8pdh68by/my-repo
+```
+
+A versioned link opens a pinned remote, fixed at that length:
+
+```js
+const pinned = new Remote(store.session(), 'git+pear://0.42.<key>/my-repo')
+await pinned.ready()
+
+pinned.pinned // true
+pinned.version // { fork: 0, length: 42 }
+```
+
+A pin is read-only and does not move. `pushRef`, `push`, `setHead`, `deleteBranch` and
+`deleteTag` throw, `update()` is a no-op, and a ref pushed after the pin is simply not there.
+A branch can be force-pushed and a tag moved; a position in a signed log always resolves to the
+same bytes, from whichever peer has them.
+
+The caller replicates the log before opening a pin, since `ready()` rejects a version the log
+cannot satisfy — a different fork, or a length it doesn't have:
+
+```js
+const core = store.get({ key })
+await core.ready()
+await core.update({ wait: true })
+
+const pinned = new Remote(store.session(), link)
+await pinned.ready() // throws on a fork mismatch or a missing length
+```
+
+Blocks themselves still arrive lazily, and nothing past the pin is ever fetched.
+
+An unversioned link follows latest and stays writable. `remote.url` reports the remote's own
+link, versioned or not, so it round-trips whatever it was opened with.
+
 ## Usage
 
 ```js
@@ -104,6 +145,18 @@ Public key of the underlying Hypercore.
 #### `remote.discoveryKey`
 
 Discovery key used for swarming.
+
+#### `remote.url`
+
+The remote's `git+pear://` link — versioned when pinned, unversioned when following latest.
+
+#### `remote.version`
+
+`{ fork, length }` when opened from a versioned link, otherwise `null`.
+
+#### `remote.pinned`
+
+Whether this remote is pinned to a version.
 
 #### `await remote.pushRef(ref, oid, objects, [opts])`
 
