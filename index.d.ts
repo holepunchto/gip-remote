@@ -5,8 +5,15 @@ interface RemoteOpts {
   blind?: any
 }
 
+interface Version {
+  fork: number
+  length: number
+}
+
 type RemoteLink =
-  string | { name: string; key?: Buffer } | { drive: { key: Buffer }; pathname?: string }
+  | string
+  | { name: string; key?: Buffer; fork?: number | null; length?: number }
+  | { drive: { key: Buffer; fork?: number | null; length?: number }; pathname?: string }
 
 interface GitObject {
   oid: string
@@ -66,6 +73,8 @@ declare class Remote {
   readonly discoveryKey: Buffer
   readonly availablePeers: number
   readonly url: string
+  readonly version: Version | null
+  readonly pinned: boolean
 
   ready(): Promise<void>
   close(): Promise<void>
@@ -186,6 +195,7 @@ export { Remote, RemoteDrive, GitPearLink, toDisk, parseCommit, walkTree }
 export type {
   RemoteOpts,
   RemoteLink,
+  Version,
   GitObject,
   Ref,
   RefObject,

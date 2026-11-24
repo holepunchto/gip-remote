@@ -2,7 +2,14 @@ const createTestnet = require('hyperdht/testnet')
 const Hyperswarm = require('hyperswarm')
 const Corestore = require('corestore')
 const tmp = require('test-tmp')
+const z32 = require('z32')
 const { Remote } = require('../..')
+
+// An unversioned link to a remote: a reader that should follow the log rather
+// than pin to wherever the writer happens to be.
+function repoLink(remote) {
+  return `git+pear://${z32.encode(remote.key)}/${remote.name}`
+}
 
 async function createStore(t) {
   const dir = await tmp(t)
@@ -108,6 +115,7 @@ function makeTagObjects() {
 module.exports = {
   createStore,
   createRemote,
+  repoLink,
   makeTestObjects,
   makeTagObjects,
   OID_BLOB1,

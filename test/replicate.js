@@ -1,6 +1,6 @@
 const test = require('brittle')
 const createTestnet = require('hyperdht/testnet')
-const { makeTestObjects, createRemote, OID_BLOB1, OID_TREE_ROOT } = require('./helpers')
+const { makeTestObjects, createRemote, repoLink, OID_BLOB1, OID_TREE_ROOT } = require('./helpers')
 
 test('replicate', async (t) => {
   const { bootstrap } = await createTestnet(3, t.teardown)
@@ -18,7 +18,7 @@ test('replicate', async (t) => {
     t.is(o.size, 164)
   }
 
-  const r2 = await createRemote(t, { link: r1.url, bootstrap })
+  const r2 = await createRemote(t, { link: repoLink(r1), bootstrap })
 
   t.alike(r1.key, r2.key)
 
@@ -80,7 +80,7 @@ test('replicate captures both commits after a follow-up push', async (t) => {
   // Fresh reader replicates from scratch — this is the path a `git clone`
   // exercises. After the helper finishes (joins swarm + waits for update),
   // the reader's view should be identical to the writer's.
-  const r2 = await createRemote(t, { link: r1.url, bootstrap })
+  const r2 = await createRemote(t, { link: repoLink(r1), bootstrap })
   t.is(r1.core.length, r2.core.length, 'reader caught up on length')
 
   // Refs survive — main points at B, not A.
